@@ -1,0 +1,6 @@
+* text=auto
+*.sh text eol=lf
+# Keep upstream dictionary data and license files byte-for-byte.
+wnja-2.1/** -text
+licenses/** -text
+*.tar.xz binary

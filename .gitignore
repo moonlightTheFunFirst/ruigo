@@ -1,0 +1,12 @@
+.venv/
+.wn/
+__pycache__/
+win/build/
+win/output/
+mac/build/
+mac/output/
+build/
+data/*.sqlite
+data/*.tmp
+/preview.png
+/test-results.txt
