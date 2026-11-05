@@ -154,11 +154,12 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     auto *right = new QWidget(splitter_);
     right->setMinimumWidth(320);
     auto *rightLayout = new QVBoxLayout(right);
-    heading_ = new QLabel(QStringLiteral("単語を入力して検索してください"));
+    heading_ = new QLabel;
     heading_->setObjectName("resultHeading");
     heading_->setTextFormat(Qt::PlainText);
     heading_->setWordWrap(true);
     rightLayout->addWidget(heading_);
+    heading_->hide();
     results_ = new QTreeWidget;
     results_->setObjectName("results");
     results_->setHeaderHidden(true);
@@ -167,8 +168,8 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     rightLayout->addWidget(results_);
     auto *hint = new QLabel(QStringLiteral("類語候補をダブルクリックでコピー ／ 右クリックで操作"));
     hint->setObjectName("resultHint");
-    hint->setWordWrap(true);
-    rightLayout->addWidget(hint);
+    hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    statusBar()->addWidget(hint, 1);
     setCentralWidget(splitter_);
     splitter_->setSizes({300, 700});
     connect(input_, &QLineEdit::returnPressed, this, [this] {
@@ -204,8 +205,10 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     if (!visible && QGuiApplication::primaryScreen())
         move(QGuiApplication::primaryScreen()->availableGeometry().topLeft() + QPoint(40, 40));
     splitter_->restoreState(settings_.value("window/splitter").toByteArray());
-    if (!repository_.open(dictionaryPath)) heading_->setText(repository_.error());
-    statusBar()->showMessage(QStringLiteral("日本語・完全一致検索"));
+    if (!repository_.open(dictionaryPath)) {
+        heading_->setText(repository_.error());
+        heading_->show();
+    }
     applyDisplaySettings();
     input_->setFocus();
 }
@@ -335,6 +338,7 @@ void MainWindow::search(const QString &input) {
     if (word.isEmpty()) return;
     input_->setText(word);
     results_->clear();
+    heading_->show();
     const auto result = repository_.search(word, language_);
     if (!result.error.isEmpty()) { heading_->setText(result.error); return; }
     heading_->setText(QStringLiteral("「%1」の類語候補：%2件（%3意味）")
