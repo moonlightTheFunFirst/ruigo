@@ -1,11 +1,61 @@
 param([switch]$Run, [switch]$Deploy, [switch]$Rebuild)
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-$qtBin = if ($env:QT_BIN) { $env:QT_BIN } else { 'F:\Qt\6.8.3\mingw_64\bin' }
-$mingwBin = if ($env:MINGW_BIN) { $env:MINGW_BIN } else { 'F:\Qt\Tools\mingw1310_64\bin' }
-foreach ($tool in @("$qtBin/qmake.exe", "$mingwBin/g++.exe")) {
-    if (!(Test-Path -LiteralPath $tool)) { throw "Tool not found: $tool. Set QT_BIN / MINGW_BIN." }
+function Find-Qmake([string]$Bin) {
+    foreach ($name in @('qmake6.exe', 'qmake.exe')) {
+        $path = Join-Path $Bin $name
+        if (Test-Path -LiteralPath $path -PathType Leaf) { return $path }
+    }
 }
+function Test-Qt6MinGW([string]$Qmake) {
+    $version = & $Qmake -query QT_VERSION
+    if ($LASTEXITCODE -ne 0 -or $version -notmatch '^6\.') { return $false }
+    $spec = & $Qmake -query QMAKE_XSPEC
+    return ($LASTEXITCODE -eq 0 -and $spec -eq 'win32-g++')
+}
+$qmake = $null
+if ($env:QT_BIN) {
+    $qmake = Find-Qmake $env:QT_BIN
+    if (!$qmake -or !(Test-Qt6MinGW $qmake)) {
+        throw "QT_BIN must contain qmake for Qt 6 MinGW: $env:QT_BIN"
+    }
+} else {
+    $candidates = @(
+        foreach ($name in @('qmake6.exe', 'qmake.exe')) {
+            Get-Command $name -CommandType Application -All -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+        }
+        $roots = @("$env:USERPROFILE/Qt") + @(Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'Qt' })
+        foreach ($root in ($roots | Select-Object -Unique)) {
+            Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^6\.\d+\.\d+$' } |
+                Sort-Object { [version]$_.Name } -Descending |
+                ForEach-Object { Find-Qmake (Join-Path $_.FullName 'mingw_64/bin') }
+        }
+    )
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if (Test-Qt6MinGW $candidate) { $qmake = $candidate; break }
+    }
+    if (!$qmake) { throw 'Qt 6 MinGW not found. Add its bin directory to PATH or set QT_BIN.' }
+}
+$qtBin = Split-Path -Parent $qmake
+$qtPrefix = & $qmake -query QT_INSTALL_PREFIX
+if ($LASTEXITCODE -ne 0) { throw 'Cannot query QT_INSTALL_PREFIX.' }
+$mingwBin = $env:MINGW_BIN
+if (!$mingwBin) {
+    # MSYS2 installs Qt and its matching compiler in the same prefix.
+    if (Test-Path -LiteralPath "$qtBin/g++.exe") { $mingwBin = $qtBin }
+    else {
+        $qtRoot = Split-Path -Parent (Split-Path -Parent $qtPrefix)
+        $compilers = @(Get-ChildItem -Path "$qtRoot/Tools/mingw*_64/bin/g++.exe" -ErrorAction SilentlyContinue)
+        if ($compilers.Count -eq 1) { $mingwBin = $compilers[0].DirectoryName }
+        else { throw 'Cannot uniquely select the MinGW compiler matching Qt. Set MINGW_BIN to its bin directory.' }
+    }
+}
+if (!(Test-Path -LiteralPath "$mingwBin/g++.exe" -PathType Leaf)) {
+    throw "MinGW compiler not found: $mingwBin/g++.exe. Correct MINGW_BIN."
+}
+Write-Host "Qt: $(& $qmake -query QT_VERSION) ($qtBin)"
+Write-Host "MinGW: $mingwBin"
 $env:PATH = "$qtBin;$mingwBin;$env:PATH"
 $buildDir = Join-Path $projectRoot 'win/build/mingw-release'
 $outputDir = Join-Path $projectRoot 'win/output'
@@ -16,7 +66,41 @@ function Invoke-Checked([string]$Program, [string[]]$Arguments) {
         throw "$Program failed ($LASTEXITCODE)"
     }
 }
-Invoke-Checked cmake @('-S', $projectRoot, '-B', $buildDir, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', "-DCMAKE_PREFIX_PATH=$qtBin/..", "-DCMAKE_CXX_COMPILER=$mingwBin/g++.exe")
+function Assert-FileWritable([string]$Path) {
+    if (Test-Path -LiteralPath $Path) {
+        try {
+            $stream = [IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
+            $stream.Dispose()
+        } catch {
+            throw "File is in use or not writable: $Path. Close Ruigo before building/deploying, then retry. This is not a dictionary DB error."
+        }
+    }
+}
+Assert-FileWritable "$buildDir/ruigo.exe"
+if ($Deploy) {
+    Assert-FileWritable "$outputDir/ruigo.exe"
+    if (!(Test-Path -LiteralPath "$projectRoot/data/dictionary.sqlite")) {
+        if (!(Test-Path -LiteralPath "$projectRoot/wnja-2.1/wnja/wnja-2.1.xml")) {
+            throw 'Japanese WordNet source missing: wnja-2.1/wnja/wnja-2.1.xml. See README.md.'
+        }
+        $python = "$projectRoot/.venv/Scripts/python.exe"
+        if (!(Test-Path -LiteralPath $python)) {
+            $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
+            if ($launcher) { Invoke-Checked $launcher.Source @('-3', '-m', 'venv', "$projectRoot/.venv") }
+            else {
+                $launcher = Get-Command python.exe -ErrorAction SilentlyContinue
+                if (!$launcher) { throw 'Install Python 3.10 or newer to generate the dictionary DB.' }
+                Invoke-Checked $launcher.Source @('-m', 'venv', "$projectRoot/.venv")
+            }
+        }
+        Invoke-Checked $python @('-c', 'import sys; assert sys.version_info >= (3, 10)')
+        Write-Host 'Generating dictionary DB (first setup requires network access)...'
+        Invoke-Checked $python @('-m', 'pip', 'install', '-r', "$projectRoot/tools/requirements.txt")
+        Invoke-Checked $python @("$projectRoot/tools/build_dictionary.py", '--download-dependencies')
+        Invoke-Checked $python @("$projectRoot/tools/build_dictionary.py", '--verify-only')
+    }
+}
+Invoke-Checked cmake @('-S', $projectRoot, '-B', $buildDir, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', "-DCMAKE_PREFIX_PATH=$qtPrefix", "-DCMAKE_CXX_COMPILER=$mingwBin/g++.exe")
 $buildArgs = @('--build', $buildDir, '--parallel')
 if ($Rebuild) { $buildArgs += '--clean-first' }
 Invoke-Checked cmake $buildArgs

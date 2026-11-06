@@ -66,13 +66,19 @@ python3 -m venv .venv
 ## Windowsビルド・起動
 
 Qt 6のMinGW版（Widgets / Sql / Test、QSQLITEプラグイン）、対応するMinGW、
-CMake 3.21以上、Ninjaが必要です。既定のQtは`F:\Qt\6.8.3\mingw_64\bin`、
-MinGWは`F:\Qt\Tools\mingw1310_64\bin`です。
+CMake 3.21以上、Ninjaが必要です（CMake / CTest / NinjaはPATHに配置）。
+Qtは`QT_BIN`の指定を優先し、未指定ならPATH上の`qmake6.exe` / `qmake.exe`、
+続いてユーザーフォルダおよび各ドライブ直下の`Qt/<バージョン>/mingw_64/bin`から
+Qt 6 MinGW版を検出します（同じQtフォルダ内は新しいバージョン順）。
+MinGWは`MINGW_BIN`を優先し、未指定ならQtと同じbin（MSYS2）、
+またはそのQtインストール先の`Tools/mingw*_64/bin`から検出します。
+Tools内に複数のMinGWがある場合は、Qtに対応するものを`MINGW_BIN`で指定してください。
+検出したQtのバージョンと両方のパスは実行時に表示します。
 
 ```powershell
-# 必要なときだけ上書き
-$env:QT_BIN = 'F:\Qt\6.8.3\mingw_64\bin'
-$env:MINGW_BIN = 'F:\Qt\Tools\mingw1310_64\bin'
+# 必要なときだけ上書き（実際のインストール先に合わせる。以下はMSYS2の例）
+$env:QT_BIN = 'D:\msys64\mingw64\bin'
+$env:MINGW_BIN = 'D:\msys64\mingw64\bin'
 powershell -ExecutionPolicy Bypass -File win/scripts/build.ps1
 powershell -ExecutionPolicy Bypass -File win/scripts/build.ps1 -Run
 powershell -ExecutionPolicy Bypass -File win/scripts/build.ps1 -Deploy
@@ -83,6 +89,11 @@ splitFiler同様の`build_and_run.bat`、`rebuild_and_run.bat`、
 失敗時の詳細は`win/build/mingw-release/test-results.txt`。
 配布は`win/output/`全体をコピーしてください。Qt DLL、QSQLITE、辞書、ライセンスを含みます。
 実行中のアプリを強制終了しないため、再ビルド時は自分でアプリを閉じてください。
+ビルド・配布先の実行ファイルが使用中なら、ビルド開始前に終了を促すエラーを表示します。
+`-Deploy`（`rebuild_and_deploy.bat`を含む）は辞書DBがない場合、CMake実行前に
+`.venv`を作成し、必要パッケージと依存辞書を取得してDBを生成・検証します。
+初回はPython 3.10以上（`py`または`python`）とネット接続、
+`wnja-2.1/wnja/wnja-2.1.xml`が必要です。既存DBがある場合は再生成しません。
 
 Visual StudioではMSVC版Qtを指定し、MinGW版と混ぜないでください:
 
