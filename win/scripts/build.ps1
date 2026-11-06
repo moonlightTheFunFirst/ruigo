@@ -1,4 +1,4 @@
-﻿param([switch]$Run, [switch]$Deploy, [switch]$Rebuild)
+﻿param([switch]$Run, [switch]$Deploy, [switch]$Rebuild, [switch]$RebuildDictionary)
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 function Find-Qmake([string]$Bin) {
@@ -124,8 +124,13 @@ function Test-DeployedApplication {
     }
 }
 Assert-FileWritable "$buildDir/ruigo.exe"
-if ($Deploy) {
-    Assert-FileWritable "$outputDir/ruigo.exe"
+if ($Deploy) { Assert-FileWritable "$outputDir/ruigo.exe" }
+if ($RebuildDictionary) {
+    # The new DB replaces data/dictionary.sqlite only after it is built and verified,
+    # but the file must not be held open (e.g. by a running test or app).
+    Assert-FileWritable "$projectRoot/data/dictionary.sqlite"
+}
+if ($Deploy -or $RebuildDictionary) {
     $python = "$projectRoot/.venv/Scripts/python.exe"
     if (!(Test-Path -LiteralPath $python)) {
         $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
@@ -141,10 +146,12 @@ if ($Deploy) {
     if ($LASTEXITCODE -ne 0) {
         Invoke-Checked $python @('-m', 'pip', 'install', '-r', "$projectRoot/tools/requirements.txt")
     }
-    if (!(Test-Path -LiteralPath "$projectRoot/data/dictionary.sqlite")) {
+    if ($RebuildDictionary -or !(Test-Path -LiteralPath "$projectRoot/data/dictionary.sqlite")) {
         if (!(Test-Path -LiteralPath "$projectRoot/wnja-2.1/wnja/wnja-2.1.xml")) {
             throw 'Japanese WordNet source missing: wnja-2.1/wnja/wnja-2.1.xml. See README.md.'
         }
+        # Downloads happen only for missing inputs (omw-en:2.0, the OEWN XML); once they
+        # are present, regeneration works offline. Source SHA-256 values are verified.
         Write-Host 'Generating dictionary DB (first setup requires network access)...'
         Invoke-Checked $python @('-m', 'pip', 'install', '-r', "$projectRoot/tools/requirements.txt")
         Invoke-Checked $python @("$projectRoot/tools/build_dictionary.py", '--download-dependencies')

@@ -101,10 +101,16 @@ powershell -ExecutionPolicy Bypass -File win/scripts/build.ps1
 powershell -ExecutionPolicy Bypass -File win/scripts/build.ps1 -Run
 powershell -ExecutionPolicy Bypass -File win/scripts/build.ps1 -Deploy
 powershell -ExecutionPolicy Bypass -File win/scripts/build.ps1 -Rebuild -Deploy
+powershell -ExecutionPolicy Bypass -File win/scripts/build.ps1 -RebuildDictionary -Rebuild -Deploy
 ```
 
 splitFiler同様の`build_and_run.bat`、`rebuild_and_run.bat`、
 `rebuild_and_deploy.bat`も使用できます。ビルド後にテストを実施します。
+辞書DBの形式が変わったときや辞書を作り直したいときは`full_rebuild_and_deploy.bat`
+（`-RebuildDictionary -Rebuild -Deploy`）を使います。既存の`data/dictionary.sqlite`があっても
+辞書DBを再生成・検証してから、ビルドフォルダを作り直してビルド・テストし、`win/output/`へ配布します。
+新しいDBは生成と検証に成功したときだけ既存DBと置き換わるので、途中で失敗しても元のDBは残ります。
+依存辞書とOEWNのXMLが取得済みならネット接続は不要です。実行前にRuigoを閉じてください（DBが開かれていると置き換えできません）。
 失敗時の詳細は`win/build/mingw-release/test-results.txt`。
 QtやMinGWを切り替えたときは、古いQtのパスがCMakeキャッシュに残るため、
 `-Rebuild`を付けるか`win/build/mingw-release`を削除してください。
