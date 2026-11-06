@@ -214,15 +214,31 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     connect(alternativeButton_, &QPushButton::clicked, this, [this] {
         search(alternativeButton_->property("word").toString(), alternativeLanguage_, true);
     });
+    // The input is a headword but also a reading/inflection of other headwords
+    // (e.g. "saw" -> see): offer those without mixing them into this result.
+    formOfButton_ = new QPushButton;
+    formOfButton_->setObjectName("formOfButton");
+    formOfButton_->hide();
+    rightLayout->addWidget(formOfButton_);
+    connect(formOfButton_, &QPushButton::clicked, this, [this] {
+        // Search only the entries that the form/reading belongs to (e.g. the verb "see").
+        if (lastResult_.formOf.size() == 1) {
+            search(lastResult_.formOf.first(), language_, true, lastResult_.formOfEntries.value(0));
+            return;
+        }
+        showChoices(lastResult_.formOf, lastResult_.formOfHints, lastResult_.formOfEntries);
+    });
     spellingChoices_ = new QListWidget;
     spellingChoices_->setObjectName("spellingChoices");
-    spellingChoices_->setMaximumHeight(120);
+    spellingChoices_->setMaximumHeight(180);
     spellingChoices_->hide();
     rightLayout->addWidget(spellingChoices_);
     const auto chooseSpelling = [this](QListWidgetItem *item) {
-        const auto word = item->text();
+        const auto word = item->data(Qt::UserRole + 1).toString();
         const auto language = item->data(Qt::UserRole).toString();
-        search(word, language, true);
+        QVector<qint64> entries;
+        for (const auto &id : item->data(Qt::UserRole + 2).toList()) entries.append(id.toLongLong());
+        search(word, language, true, entries);
     };
     connect(spellingChoices_, &QListWidget::itemClicked, this, chooseSpelling);
     connect(spellingChoices_, &QListWidget::itemActivated, this, chooseSpelling);
@@ -423,22 +439,46 @@ void MainWindow::deleteHistory() {
     historyList_->setCurrentRow(-1);
     refreshHistory(); // The remaining same-spelling row may no longer need its label.
 }
-void MainWindow::search(const QString &input, const QString &requestedLanguage, bool record) {
+void MainWindow::search(const QString &input, const QString &requestedLanguage, bool record,
+                        const QVector<qint64> &entries) {
     const auto word = input.trimmed();
     if (word.isEmpty()) return;
     input_->setText(word);
-    lastResult_ = repository_.search(word, requestedLanguage);
+    // A headword chosen from a reading/inflection keeps its matched entries; history
+    // still stores only the word and language.
+    lastResult_ = entries.isEmpty() ? repository_.search(word, requestedLanguage)
+                                    : repository_.searchEntries(word, requestedLanguage, entries);
     lastWord_ = word;
     language_ = lastResult_.language;
     alternativeLanguage_ = lastResult_.alternativeLanguage;
     if (record) { history_.add(word, language_); refreshHistory(); }
     showResult();
 }
+void MainWindow::showChoices(const QStringList &headwords, const QStringList &hints,
+                             const QVector<QVector<qint64>> &entries) {
+    // Each row shows the headword and, when known, its first meaning; choosing a
+    // row searches that headword (recorded in history like the other-language button),
+    // limited to its matched entries when there are any.
+    spellingChoices_->clear();
+    for (int i = 0; i < headwords.size(); ++i) {
+        const auto hint = hints.value(i);
+        auto *item = new QListWidgetItem(hint.isEmpty() ? headwords[i]
+                                                        : QStringLiteral("%1 — %2").arg(headwords[i], hint), spellingChoices_);
+        item->setData(Qt::UserRole, language_);
+        item->setData(Qt::UserRole + 1, headwords[i]);
+        QVariantList ids;
+        for (const auto id : entries.value(i)) ids.append(id);
+        item->setData(Qt::UserRole + 2, ids);
+        if (!hint.isEmpty()) item->setToolTip(item->text());
+    }
+    spellingChoices_->show();
+}
 void MainWindow::showResult() {
     const auto &result = lastResult_;
     const auto &word = lastWord_;
     QToolTip::hideText();
     alternativeButton_->hide();
+    formOfButton_->hide();
     spellingChoices_->hide();
     spellingChoices_->clear();
     results_->clear();
@@ -454,13 +494,23 @@ void MainWindow::showResult() {
         alternativeButton_->setText(QStringLiteral("%1にも見出しがあります → %1で検索").arg(name));
         alternativeButton_->show();
     }
+    const auto quoted = [](const QStringList &words) {
+        return QStringLiteral("「%1」").arg(words.join(QStringLiteral("」「")));
+    };
+    const auto relation = [](const QString &kind) {
+        if (kind == "spelling") return QStringLiteral("の別表記");
+        if (kind == "reading") return QStringLiteral("の読み");
+        if (kind == "inflection") return QStringLiteral("の活用形");
+        return QStringLiteral("として検索");
+    };
+    if (!result.formOf.isEmpty()) {
+        formOfButton_->setText(QStringLiteral("%1%2としても検索").arg(quoted(result.formOf), relation(result.formOfKind)));
+        formOfButton_->show();
+    }
     // Say which headword was searched when it is not literally the input.
     QString target = QStringLiteral("「%1」").arg(word);
-    if (!result.matchedWords.isEmpty()) {
-        const auto headwords = QStringLiteral("「%1」").arg(result.matchedWords.join(QStringLiteral("」「")));
-        target += result.viaAlias ? QStringLiteral("（%1の別表記）").arg(headwords)
-                                  : QStringLiteral("（%1として検索）").arg(headwords);
-    }
+    if (!result.matchedWords.isEmpty())
+        target += QStringLiteral("（%1%2）").arg(quoted(result.matchedWords), relation(result.matchKind));
     QString heading = QStringLiteral("%1で検索 — %2の類語候補：%3件（%4意味）")
         .arg(DictionaryRepository::languageName(language_), target)
         .arg(result.candidateCount()).arg(result.groups.size());
@@ -470,12 +520,13 @@ void MainWindow::showResult() {
         heading += QStringLiteral("（似た意味の関連語%1件は非表示）").arg(result.relatedCount());
     heading_->setText(heading);
     if (!result.spellings.isEmpty()) {
-        heading_->setText(QStringLiteral("%1 に一致しました。綴りを選んでください。").arg(result.spellings.join(" / ")));
-        for (const auto &spelling : result.spellings) {
-            auto *item = new QListWidgetItem(spelling, spellingChoices_);
-            item->setData(Qt::UserRole, language_);
-        }
-        spellingChoices_->show();
+        if (result.choiceKind == "reading")
+            heading_->setText(QStringLiteral("「%1」と読む見出しが%2語あります。選んでください。").arg(word).arg(result.spellings.size()));
+        else if (result.choiceKind == "inflection")
+            heading_->setText(QStringLiteral("「%1」は%2の活用形です。選んでください。").arg(word, quoted(result.spellings)));
+        else
+            heading_->setText(QStringLiteral("%1 に一致しました。綴りを選んでください。").arg(result.spellings.join(" / ")));
+        showChoices(result.spellings, result.choiceHints, result.choiceEntries);
         return;
     }
     if (!result.found) {
@@ -511,6 +562,13 @@ bool MainWindow::eventFilter(QObject *object, QEvent *event) {
         // Down in the search box moves to the first candidate so that a word can be
         // chosen and copied without the mouse.
         if (object == input_ && plain && key->key() == Qt::Key_Down) {
+            // A headword choice (homophones, case variants, several bases) comes first;
+            // Enter on a row then searches it.
+            if (!spellingChoices_->isHidden() && spellingChoices_->count() > 0) {
+                spellingChoices_->setFocus(Qt::TabFocusReason);
+                spellingChoices_->setCurrentRow(0);
+                return true;
+            }
             for (int i = 0; i < results_->topLevelItemCount(); ++i) {
                 if (auto *group = results_->topLevelItem(i); group->childCount() > 0) {
                     results_->setFocus(Qt::TabFocusReason);

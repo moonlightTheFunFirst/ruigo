@@ -26,7 +26,7 @@ Copyright 2009–2011 NICT; 2012–2015 Francis Bond;
 
 The application database is a conversion of the supplied WN-LMF 1.4 package.
 Its original license, including disclaimer, is in `licenses/wnja-LICENSE`.
-Dictionary readings are retained but are not searched. Of the semantic relations,
+Dictionary readings are retained and also used to look up headwords. Of the semantic relations,
 only "similar" synset relations are included, shown as related words apart from
 synonyms. Examples and other relations are not included. No definitions are generated.
 
@@ -48,7 +48,8 @@ License sources: the project repository files `LICENSE.md` and `WNDB_License.txt
 
 The WN-LMF data is converted to application-specific SQLite: original entry
 IDs, parts of speech, synsets and English definitions are retained; search
-keys and source namespaces are added. Only "similar" synset relations are
+keys and source namespaces are added. The irregular inflected forms recorded in
+the data (e.g. went -> go) are indexed for lookup. Only "similar" synset relations are
 retained and shown as related words apart from synonyms. Examples, other
 relations and pronunciations are not exposed. No definitions or translations are generated.
 This conversion is not endorsed by the dictionary authors.

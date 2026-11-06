@@ -17,8 +17,11 @@ protected:
     void closeEvent(QCloseEvent *event) override;
     bool eventFilter(QObject *object, QEvent *event) override;
 private:
-    void search(const QString &word, const QString &language = {}, bool record = false);
+    void search(const QString &word, const QString &language = {}, bool record = false,
+                const QVector<qint64> &entries = {});
     void showResult();
+    void showChoices(const QStringList &headwords, const QStringList &hints,
+                     const QVector<QVector<qint64>> &entries);
     void refreshHistory();
     void editHistory();
     void deleteHistory();
@@ -34,6 +37,7 @@ private:
     SearchResult lastResult_;
     QString lastWord_;
     QPushButton *alternativeButton_;
+    QPushButton *formOfButton_;
     QCheckBox *showRelatedCheck_;
     QLineEdit *input_;
     QListWidget *historyList_;

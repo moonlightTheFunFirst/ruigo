@@ -42,7 +42,7 @@ bool DictionaryRepository::open(const QString &path) {
         return false;
     }
     QSqlQuery check(db_);
-    if (!check.exec("PRAGMA user_version") || !check.next() || check.value(0).toInt() != 4) {
+    if (!check.exec("PRAGMA user_version") || !check.next() || check.value(0).toInt() != 5) {
         error_ = QStringLiteral("辞書DBの形式が未対応、または破損しています。日英辞書DBを再生成してください。");
     } else if (!check.exec("SELECT l.word,l.language,l.forms_json,l.search_key,src.reading_mode,s.id,s.source,d.definition,d.language,se.lemma_id "
                            "FROM lemmas l JOIN sources src ON src.id=l.source JOIN senses se ON se.lemma_id=l.id "
@@ -50,7 +50,7 @@ bool DictionaryRepository::open(const QString &path) {
                            "LEFT JOIN synset_definitions d ON d.synset_id=s.id LIMIT 0")) {
         error_ = QStringLiteral("辞書DBの構造が不正です。\n%1").arg(check.lastError().text());
     }
-    if (error_.isEmpty() && !check.exec("SELECT lemma_id,language,word FROM lemma_aliases LIMIT 0"))
+    if (error_.isEmpty() && !check.exec("SELECT lemma_id,language,word,kind FROM lemma_aliases LIMIT 0"))
         error_ = QStringLiteral("辞書DBの別表記索引が不正です。再生成してください。");
     if (error_.isEmpty() && !check.exec("SELECT synset_id,target_id,rel_type FROM synset_relations LIMIT 0"))
         error_ = QStringLiteral("辞書DBの関連語データが不正です。再生成してください。");
@@ -72,46 +72,181 @@ QString DictionaryRepository::preferredLanguage(const QString &word) {
     }
     return latin ? QStringLiteral("en") : QStringLiteral("ja");
 }
+QVector<DictionaryRepository::AliasHit> DictionaryRepository::aliasHits(const QString &word, const QString &language,
+                                                                        const QStringList &kinds, QString &error) const {
+    QVector<AliasHit> hits;
+    QStringList placeholders;
+    for (int i = 0; i < kinds.size(); ++i) placeholders.append(":kind" + QString::number(i));
+    QSqlQuery query(db_);
+    query.prepare("SELECT a.lemma_id, l.word, a.kind FROM lemma_aliases a JOIN lemmas l ON l.id=a.lemma_id "
+                  "WHERE a.language=:language AND a.word=:word AND a.kind IN (" + placeholders.join(',') + ") "
+                  "ORDER BY l.id");
+    query.bindValue(":language", language);
+    query.bindValue(":word", word);
+    for (int i = 0; i < kinds.size(); ++i) query.bindValue(":kind" + QString::number(i), kinds[i]);
+    if (!query.exec()) { error = query.lastError().text(); return hits; }
+    while (query.next())
+        hits.append({query.value(0).toLongLong(), query.value(1).toString(), query.value(2).toString()});
+    if (query.lastError().isValid()) error = query.lastError().text();
+    return hits;
+}
+QVector<DictionaryRepository::AliasHit> DictionaryRepository::regularInflections(const QString &word, QString &error) const {
+    // WordNet's "morphy" detachment rules for regular English inflections. A
+    // candidate is accepted only when the dictionary has it as a headword of the
+    // matching part of speech, so nothing outside the dictionary is produced.
+    struct Rule { const char *suffix; const char *ending; const char *pos; };
+    static const Rule rules[] = {
+        {"s", "", "n"}, {"ses", "s", "n"}, {"xes", "x", "n"}, {"zes", "z", "n"}, {"ches", "ch", "n"},
+        {"shes", "sh", "n"}, {"men", "man", "n"}, {"ies", "y", "n"},
+        {"s", "", "v"}, {"ies", "y", "v"}, {"es", "e", "v"}, {"es", "", "v"}, {"ed", "e", "v"}, {"ed", "", "v"},
+        {"ing", "e", "v"}, {"ing", "", "v"},
+        {"er", "", "a"}, {"est", "", "a"}, {"er", "e", "a"}, {"est", "e", "a"},
+    };
+    QVector<AliasHit> hits;
+    QSqlQuery query(db_);
+    query.prepare("SELECT id, word FROM lemmas WHERE language='en' AND word=:word AND pos IN (:pos, :satellite) ORDER BY id");
+    for (const auto &rule : rules) {
+        const auto suffix = QString::fromLatin1(rule.suffix);
+        if (!word.endsWith(suffix) || word.size() <= suffix.size()) continue;
+        const auto base = word.left(word.size() - suffix.size()) + QString::fromLatin1(rule.ending);
+        const auto pos = QString::fromLatin1(rule.pos);
+        query.bindValue(":word", base);
+        query.bindValue(":pos", pos);
+        query.bindValue(":satellite", pos == "a" ? QStringLiteral("s") : pos);
+        if (!query.exec()) { error = query.lastError().text(); return {}; }
+        while (query.next()) {
+            const auto id = query.value(0).toLongLong();
+            if (std::none_of(hits.begin(), hits.end(), [&](const AliasHit &hit) { return hit.id == id; }))
+                hits.append({id, query.value(1).toString(), QStringLiteral("inflection")});
+        }
+    }
+    return hits;
+}
+QStringList DictionaryRepository::firstDefinitions(const QStringList &words, const QString &language,
+                                                   const QVector<QVector<qint64>> &entryIds) const {
+    // The dictionary's first-listed meaning of each headword, to tell homophones apart.
+    // When the matched entries are known, the meaning comes from those entries only
+    // (e.g. the verb "see" reached from "saw", not the noun "see").
+    QStringList result;
+    for (int i = 0; i < words.size(); ++i) {
+        const auto ids = entryIds.value(i);
+        QStringList placeholders;
+        for (int j = 0; j < ids.size(); ++j) placeholders.append(":id" + QString::number(j));
+        QSqlQuery query(db_);
+        query.prepare("SELECT d.definition FROM lemmas l JOIN senses s ON s.lemma_id=l.id "
+                      "JOIN synset_definitions d ON d.synset_id=s.synset_id AND d.language=l.language "
+                      "WHERE l.language=:language AND l.word=:word "
+                      + (ids.isEmpty() ? QString() : "AND l.id IN (" + placeholders.join(',') + ") ")
+                      + "ORDER BY l.id, s.rowid LIMIT 1");
+        query.bindValue(":language", language);
+        query.bindValue(":word", words[i]);
+        for (int j = 0; j < ids.size(); ++j) query.bindValue(":id" + QString::number(j), ids[j]);
+        result.append(query.exec() && query.next() ? query.value(0).toString().section('\n', 0, 0) : QString());
+    }
+    return result;
+}
 DictionaryRepository::Lookup DictionaryRepository::lookup(const QString &input, const QString &language) const {
+    // Order: headword, spelling variant, width/NFC-normalized headword and variant,
+    // case-insensitive headword (en), reading (ja) / recorded inflection (en),
+    // regular inflection rules (en). The first step that matches wins.
     Lookup result;
+    const auto readingKinds = QStringList{QStringLiteral("reading"), QStringLiteral("inflection")};
     QSqlQuery query(db_);
     query.prepare("SELECT word FROM lemmas WHERE language=:language AND word=:word LIMIT 1");
-    query.bindValue(":language", language);
-    query.bindValue(":word", input);
-    if (!query.exec()) { result.error = query.lastError().text(); return result; }
-    if (query.next()) { result.word = query.value(0).toString(); result.found = true; return result; }
-    const auto aliases = [&](const QString &spelling) {
-        QSqlQuery aliasQuery(db_);
-        aliasQuery.prepare("SELECT lemma_id FROM lemma_aliases WHERE language=:language AND word=:word");
-        aliasQuery.bindValue(":language", language);
-        aliasQuery.bindValue(":word", spelling);
-        if (!aliasQuery.exec()) { result.error = aliasQuery.lastError().text(); return; }
-        while (aliasQuery.next()) result.lemmaIds.append(aliasQuery.value(0).toLongLong());
-        if (aliasQuery.lastError().isValid()) result.error = aliasQuery.lastError().text();
-        result.found = !result.lemmaIds.isEmpty();
-        if (result.found) result.word = spelling;
+    const auto headword = [&](const QString &word) {
+        query.bindValue(":language", language);
+        query.bindValue(":word", word);
+        if (!query.exec()) { result.error = query.lastError().text(); return false; }
+        if (!query.next()) return false;
+        result.word = query.value(0).toString();
+        result.found = true;
+        return true;
     };
-    aliases(input);
-    if (result.found || !result.error.isEmpty()) return result;
+    // Several entries reached at once: one headword is searched directly by entry
+    // id; different headwords become a choice so their meanings are never merged.
+    // Groups hits by headword, keeping the matched entry ids of each headword.
+    const auto group = [](const QVector<AliasHit> &hits, QStringList &headwords, QVector<QVector<qint64>> &ids) {
+        for (const auto &hit : hits) {
+            auto index = headwords.indexOf(hit.headword);
+            if (index < 0) { headwords.append(hit.headword); ids.append(QVector<qint64>()); index = headwords.size() - 1; }
+            if (!ids[index].contains(hit.id)) ids[index].append(hit.id);
+        }
+    };
+    const auto take = [&](const QVector<AliasHit> &hits, const QString &spelling, const QString &kind) {
+        if (hits.isEmpty()) return false;
+        QStringList headwords;
+        QVector<QVector<qint64>> ids;
+        group(hits, headwords, ids);
+        result.found = true;
+        result.kind = kind;
+        if (headwords.size() > 1) {
+            result.choices = headwords;
+            result.choiceIds = ids;
+            result.choiceKind = kind;
+            return true;
+        }
+        result.word = spelling;
+        result.lemmaIds = ids.first();
+        return true;
+    };
+    const auto withFormOf = [&]() {
+        // The matched headword may also be a reading/inflection of other headwords
+        // (e.g. "saw" -> see). Forms are stored as written, so look up the headword.
+        QVector<AliasHit> others;
+        for (const auto &hit : aliasHits(result.word, language, readingKinds, result.error))
+            if (hit.headword != result.word) { others.append(hit); result.formOfKind = hit.kind; }
+        group(others, result.formOf, result.formOfIds);
+        return result;
+    };
+
+    if (headword(input)) return withFormOf();
+    if (!result.error.isEmpty()) return result;
+    if (take(aliasHits(input, language, {QStringLiteral("spelling")}, result.error), input, QStringLiteral("spelling"))
+        || !result.error.isEmpty())
+        return result;
     QString word = input;
     for (auto &c : word)
         if ((c.unicode() >= 0xff21 && c.unicode() <= 0xff3a) || (c.unicode() >= 0xff41 && c.unicode() <= 0xff5a))
             c = QChar(c.unicode() - 0xfee0);
     if (language == "en") word = word.normalized(QString::NormalizationForm_C);
-    query.bindValue(":word", word);
-    if (!query.exec()) { result.error = query.lastError().text(); return result; }
-    if (query.next()) { result.word = query.value(0).toString(); result.found = true; return result; }
-    if (word != input) aliases(word);
-    if (result.found || !result.error.isEmpty() || language != "en") return result;
-    query.prepare("SELECT DISTINCT word FROM lemmas WHERE language=:language AND search_key=:key ORDER BY word");
-    query.bindValue(":language", language);
-    query.bindValue(":key", word.toLower());
-    if (!query.exec()) { result.error = query.lastError().text(); return result; }
-    while (query.next()) result.spellings.append(query.value(0).toString());
-    if (query.lastError().isValid()) result.error = query.lastError().text();
-    result.found = !result.spellings.isEmpty();
-    if (result.spellings.size() == 1) { result.word = result.spellings.takeFirst(); }
-
+    if (word != input) {
+        if (headword(word)) { result.kind = QStringLiteral("normalized"); return withFormOf(); }
+        if (!result.error.isEmpty()) return result;
+        if (take(aliasHits(word, language, {QStringLiteral("spelling")}, result.error), word, QStringLiteral("spelling"))
+            || !result.error.isEmpty())
+            return result;
+    }
+    if (language == "en") {
+        QSqlQuery folded(db_);
+        folded.prepare("SELECT DISTINCT word FROM lemmas WHERE language=:language AND search_key=:key ORDER BY word");
+        folded.bindValue(":language", language);
+        folded.bindValue(":key", word.toLower());
+        if (!folded.exec()) { result.error = folded.lastError().text(); return result; }
+        QStringList spellings;
+        while (folded.next()) spellings.append(folded.value(0).toString());
+        if (folded.lastError().isValid()) { result.error = folded.lastError().text(); return result; }
+        if (spellings.size() == 1) {
+            result.word = spellings.first(); result.found = true; result.kind = QStringLiteral("normalized");
+            return withFormOf(); // "Saw"/"SAW" offer "see" just like "saw".
+        }
+        if (spellings.size() > 1) {
+            result.found = true; result.choices = spellings; result.choiceKind = QStringLiteral("case");
+            return result;
+        }
+    }
+    QStringList forms{input};
+    if (word != input) forms.append(word);
+    if (language == "en" && word.toLower() != word) forms.append(word.toLower());
+    for (const auto &form : forms) {
+        auto hits = aliasHits(form, language, readingKinds, result.error);
+        if (!result.error.isEmpty()) return result;
+        if (take(hits, form, hits.isEmpty() ? QString() : hits.first().kind)) return result;
+    }
+    if (language == "en") {
+        const auto hits = regularInflections(word.toLower(), result.error);
+        if (!result.error.isEmpty()) return result;
+        take(hits, word.toLower(), QStringLiteral("inflection"));
+    }
     return result;
 }
 SearchResult DictionaryRepository::resolve(const QString &input, const QString &requestedLanguage, Lookup &selected) const {
@@ -136,7 +271,14 @@ SearchResult DictionaryRepository::resolve(const QString &input, const QString &
         if (!selected.error.isEmpty()) { result.error = selected.error; return result; }
     } else if (other.found) result.alternativeLanguage = otherLanguage;
     result.found = selected.found;
-    result.spellings = selected.spellings;
+    result.spellings = selected.choices;
+    result.choiceKind = selected.choiceKind;
+    result.choiceEntries = selected.choiceIds;
+    result.matchKind = selected.kind;
+    result.viaAlias = selected.kind == "spelling";
+    result.formOf = selected.formOf;
+    result.formOfKind = selected.formOfKind;
+    result.formOfEntries = selected.formOfIds;
     return result;
 }
 QString DictionaryRepository::resolveLanguage(const QString &word) const {
@@ -147,7 +289,43 @@ QString DictionaryRepository::resolveLanguage(const QString &word) const {
 SearchResult DictionaryRepository::search(const QString &input, const QString &requestedLanguage) const {
     Lookup selected;
     auto result = resolve(input, requestedLanguage, selected);
-    if (!result.error.isEmpty() || !result.found || !result.spellings.isEmpty()) return result;
+    if (!result.error.isEmpty() || !result.found) return result;
+    if (!result.spellings.isEmpty()) {
+        result.choiceHints = firstDefinitions(result.spellings, result.language, result.choiceEntries);
+        return result;
+    }
+    if (!result.formOf.isEmpty())
+        result.formOfHints = firstDefinitions(result.formOf, result.language, result.formOfEntries);
+    return collect(result, selected, input);
+}
+SearchResult DictionaryRepository::searchEntries(const QString &headword, const QString &language,
+                                                 const QVector<qint64> &entryIds) const {
+    SearchResult result;
+    result.language = language;
+    const auto word = headword.trimmed();
+    if (word.isEmpty()) return result;
+    if (language != "ja" && language != "en") { result.error = QStringLiteral("未対応の検索言語です。"); return result; }
+    if (!db_.isOpen()) {
+        result.error = error_.isEmpty() ? QStringLiteral("辞書DBが開かれていません。") : error_;
+        return result;
+    }
+    // Keep only ids that really are this headword in this language.
+    Lookup selected;
+    selected.word = word;
+    QSqlQuery check(db_);
+    check.prepare("SELECT 1 FROM lemmas WHERE id=:id AND language=:language AND word=:word");
+    for (const auto id : entryIds) {
+        check.bindValue(":id", id);
+        check.bindValue(":language", language);
+        check.bindValue(":word", word);
+        if (!check.exec()) { result.error = check.lastError().text(); return result; }
+        if (check.next() && !selected.lemmaIds.contains(id)) selected.lemmaIds.append(id);
+    }
+    if (selected.lemmaIds.isEmpty()) return result; // Nothing valid: not found, never widened.
+    selected.found = result.found = true;
+    return collect(result, selected, word);
+}
+SearchResult DictionaryRepository::collect(SearchResult result, const Lookup &selected, const QString &input) const {
     const auto word = selected.word;
     const auto language = result.language;
     QString match = "matched.word=:word";
@@ -164,20 +342,21 @@ SearchResult DictionaryRepository::search(const QString &input, const QString &r
     };
     // Report which headword was searched when it is not literally the input.
     if (!selected.lemmaIds.isEmpty()) {
-        result.viaAlias = true;
         QSqlQuery headwords(db_);
         headwords.prepare("SELECT DISTINCT matched.word FROM lemmas matched WHERE matched.language=:language AND "
                           + match + " ORDER BY matched.word");
         bindMatch(headwords);
         if (headwords.exec())
             while (headwords.next()) result.matchedWords.append(headwords.value(0).toString());
+        // Searching chosen entries of the input headword itself is not a different headword.
+        if (result.matchedWords == QStringList{input.trimmed()}) result.matchedWords.clear();
     } else if (word != input.trimmed()) {
         result.matchedWords.append(word);
     }
     // Same-meaning synonyms come from the matched synsets; related words come
     // from synsets the dictionary marks as "similar" to them. Both exclude the
     // input and the matched headwords, and neither is merged into the other.
-    const auto collect = [&](const QString &synsetColumn, const QString &joins, QVector<MeaningGroup> &groups) {
+    const auto gather = [&](const QString &synsetColumn, const QString &joins, QVector<MeaningGroup> &groups) {
         QSqlQuery query(db_);
         query.prepare("SELECT DISTINCT " + synsetColumn + ", COALESCE(d.definition,''), candidate.word "
             "FROM lemmas matched JOIN senses hit ON hit.lemma_id=matched.id " + joins +
@@ -200,9 +379,9 @@ SearchResult DictionaryRepository::search(const QString &input, const QString &r
         if (query.lastError().isValid()) { result.error = query.lastError().text(); return false; }
         return true;
     };
-    if (!collect("s.id", "JOIN synsets s ON s.id=hit.synset_id JOIN senses member ON member.synset_id=s.id ",
+    if (!gather("s.id", "JOIN synsets s ON s.id=hit.synset_id JOIN senses member ON member.synset_id=s.id ",
                  result.groups)
-        || !collect("r.target_id", "JOIN synset_relations r ON r.synset_id=hit.synset_id AND r.rel_type='similar' "
+        || !gather("r.target_id", "JOIN synset_relations r ON r.synset_id=hit.synset_id AND r.rel_type='similar' "
                     "JOIN senses member ON member.synset_id=r.target_id ", result.relatedGroups)) {
         result.groups.clear();
         result.relatedGroups.clear();

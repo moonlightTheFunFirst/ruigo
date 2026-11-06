@@ -31,5 +31,21 @@ class SpellingAliases(unittest.TestCase):
         self.assertEqual(builder.spelling_aliases(entry, "en"), [])
 
 
+class LemmaAliases(unittest.TestCase):
+    def test_japanese_readings_and_spellings_are_separate_kinds(self):
+        entry = {"lemma": {"writtenForm": "哀しい"}, "forms": [
+            {"writtenForm": "悲しい"},
+            {"writtenForm": "かなしい", "script": "hira"},
+            {"writtenForm": "カナシイ", "script": "kana"},
+            {"writtenForm": "哀しい", "script": "hira"},
+        ]}
+        self.assertEqual(builder.lemma_aliases(entry, "ja"),
+                         [("かなしい", "reading"), ("カナシイ", "reading"), ("悲しい", "spelling")])
+
+    def test_english_forms_are_inflections(self):
+        entry = {"lemma": {"writtenForm": "go"}, "forms": [{"writtenForm": "went"}, {"writtenForm": "gone"}]}
+        self.assertEqual(builder.lemma_aliases(entry, "en"), [("gone", "inflection"), ("went", "inflection")])
+
+
 if __name__ == "__main__":
     unittest.main()

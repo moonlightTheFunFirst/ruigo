@@ -52,7 +52,7 @@ private slots:
             QVERIFY2(db.open(), qPrintable(db.lastError().text()));
             QSqlQuery q(db);
             const QStringList sql = {
-                "PRAGMA user_version=4",
+                "PRAGMA user_version=5",
                 "CREATE TABLE lemmas(id INTEGER PRIMARY KEY,word TEXT,language TEXT,forms_json TEXT DEFAULT '[]')",
                 "CREATE TABLE synsets(id TEXT PRIMARY KEY,source TEXT)",
                 "CREATE TABLE synset_definitions(synset_id TEXT,language TEXT,definition TEXT)",
@@ -69,7 +69,7 @@ private slots:
                 R"(INSERT INTO lemmas VALUES (7,'綺麗','ja','[{"writtenForm":"べつよみ","script":"hira"}]'))",
                 "INSERT INTO senses VALUES ('s5',7)",
                 "INSERT INTO synset_definitions VALUES ('s5','ja','別の同形異義語')",
-                "CREATE TABLE lemma_aliases(lemma_id INTEGER,language TEXT,word TEXT,PRIMARY KEY(lemma_id,word))",
+                "CREATE TABLE lemma_aliases(lemma_id INTEGER,language TEXT,word TEXT,kind TEXT DEFAULT 'spelling',PRIMARY KEY(lemma_id,kind,word))",
                 "CREATE INDEX idx_alias ON lemma_aliases(language,word)",
                 "CREATE TABLE sources(id TEXT PRIMARY KEY, reading_mode TEXT)",
                 "INSERT INTO sources VALUES ('ja-source','kana'),('en-source','none')",
@@ -85,7 +85,7 @@ private slots:
                 "INSERT INTO lemmas(id,word,language,source,search_key) VALUES (18,'哀しい','ja','ja-source','哀しい'),(19,'悲しげ','ja','ja-source','悲しげ'),(20,'哀しい','ja','ja-source','哀しい'),(21,'無関係な語','ja','ja-source','無関係な語')",
                 "INSERT INTO synsets VALUES ('alias1','ja-source'),('alias2','ja-source')",
                 "INSERT INTO senses VALUES ('alias1',18),('alias1',19),('alias2',20),('alias2',21)",
-                "INSERT INTO lemma_aliases VALUES (18,'ja','悲しい'),(18,'ja','美しい'),(18,'ja','SAD-JA'),(18,'ja','別''表記')",
+                "INSERT INTO lemma_aliases(lemma_id,language,word) VALUES (18,'ja','悲しい'),(18,'ja','美しい'),(18,'ja','SAD-JA'),(18,'ja','別''表記')",
                 // "similar" relations: s1 -> similar1 (English words only, so Japanese searches on s1 gain nothing),
                 // alias1 -> similar2 (Japanese), a self-relation on alias1, and a non-"similar" relation that must be ignored.
                 "CREATE TABLE synset_relations(synset_id TEXT,target_id TEXT,rel_type TEXT,PRIMARY KEY(synset_id,rel_type,target_id))",
@@ -93,9 +93,34 @@ private slots:
                 "INSERT INTO synsets VALUES ('similar1','en-source'),('similar2','ja-source')",
                 "INSERT INTO senses VALUES ('similar1',22),('similar1',23),('similar2',24),('similar2',25)",
                 "INSERT INTO synset_definitions VALUES ('similar1','en','very pleasing'),('similar2','ja','似た意味のテスト')",
-                "INSERT INTO synset_relations VALUES ('s1','similar1','similar'),('alias1','similar2','similar'),('alias1','alias1','similar'),('alias1','s3','hypernym')"
+                "INSERT INTO synset_relations VALUES ('s1','similar1','similar'),('alias1','similar2','similar'),('alias1','alias1','similar'),('alias1','s3','hypernym')",
+                // Readings (ja). 綺麗 has two entries with the same reading: one headword, searched by entry.
+                // きかい is shared by two different headwords, so it becomes a choice. べつよみ belongs only to
+                // the unrelated 綺麗 homograph (entry 7).
+                "INSERT INTO lemmas(id,word,language,source,search_key) VALUES (26,'機械','ja','ja-source','機械'),(27,'機会','ja','ja-source','機会'),(28,'装置','ja','ja-source','装置'),(29,'好機','ja','ja-source','好機')",
+                "INSERT INTO synsets VALUES ('machine','ja-source'),('chance','ja-source')",
+                "INSERT INTO senses VALUES ('machine',26),('machine',28),('chance',27),('chance',29)",
+                "INSERT INTO synset_definitions VALUES ('machine','ja','動力で動く仕掛け'),('chance','ja','ちょうどよい時')",
+                "INSERT INTO lemma_aliases VALUES (2,'ja','きれい','reading'),(2,'ja','キレイ','reading'),(3,'ja','きれい','reading'),(3,'ja','キレイ','reading'),(7,'ja','べつよみ','reading'),(18,'ja','かなしい','reading'),(18,'ja','カナシイ','reading'),(26,'ja','きかい','reading'),(27,'ja','きかい','reading')",
+                // English: recorded irregular forms (went -> go; leaves -> leaf/leave), a regular form resolved by
+                // rule (cats -> cat, noun only), and a headword that is also another word's form (saw -> see).
+                "ALTER TABLE lemmas ADD COLUMN pos TEXT DEFAULT ''",
+                "INSERT INTO lemmas(id,word,language,source,search_key,pos) VALUES (40,'go','en','en-source','go','v'),(41,'travel','en','en-source','travel','v'),(42,'cat','en','en-source','cat','n'),(43,'true cat','en','en-source','true cat','n'),(44,'saw','en','en-source','saw','n'),(45,'see','en','en-source','see','v'),(46,'understand','en','en-source','understand','v'),(47,'leaf','en','en-source','leaf','n'),(48,'leave','en','en-source','leave','n'),(49,'walk','en','en-source','walk','v'),(50,'stroll','en','en-source','stroll','v'),(51,'cat','en','en-source','cat','v')",
+                "INSERT INTO synsets VALUES ('go1','en-source'),('cat1','en-source'),('saw1','en-source'),('see1','en-source'),('leaf1','en-source'),('leave1','en-source'),('walk1','en-source'),('vomit1','en-source')",
+                "INSERT INTO senses VALUES ('go1',40),('go1',41),('cat1',42),('cat1',43),('saw1',44),('see1',45),('see1',46),('leaf1',47),('leave1',48),('walk1',49),('walk1',50),('vomit1',51)",
+                "INSERT INTO synset_definitions VALUES ('go1','en','change location'),('cat1','en','feline mammal'),('see1','en','perceive by sight'),('leaf1','en','green part of a plant'),('leave1','en','permission to be absent')",
+                "INSERT INTO lemma_aliases VALUES (40,'en','went','inflection'),(45,'en','saw','inflection'),(47,'en','leaves','inflection'),(48,'en','leaves','inflection')",
+                // Same spelling, other part of speech, no forms registered: the noun "see" (39) and the verb
+                // "leave" (38). Lower ids than the registered entries, so a lookup by word alone would pick
+                // them first. seeN also has a "similar" relation that must not appear after choosing "see".
+                "INSERT INTO lemmas(id,word,language,source,search_key,pos) VALUES (38,'leave','en','en-source','leave','v'),(39,'see','en','en-source','see','n'),(52,'depart','en','en-source','depart','v'),(53,'bishopric','en','en-source','bishopric','n'),(54,'diocese','en','en-source','diocese','n')",
+                "INSERT INTO synsets VALUES ('leaveV','en-source'),('seeN','en-source'),('dioceseS','en-source')",
+                "INSERT INTO senses VALUES ('leaveV',38),('leaveV',52),('seeN',39),('seeN',53),('dioceseS',54)",
+                "INSERT INTO synset_definitions VALUES ('leaveV','en','go away'),('seeN','en','seat of a bishop'),('dioceseS','en','district of a bishop')",
+                "INSERT INTO synset_relations VALUES ('seeN','dioceseS','similar')"
             };
-            for (const auto &statement : sql) QVERIFY(q.exec(statement));
+            for (const auto &statement : sql)
+                QVERIFY2(q.exec(statement), qPrintable(statement + "\n" + q.lastError().text()));
             q.finish();
             db.close();
         }
@@ -415,10 +440,6 @@ private slots:
         QCOMPARE(repository.resolveLanguage("ＳＡＤ-ＪＡ"), QString("ja"));
         QCOMPARE(repository.search("ＳＡＤ-ＪＡ").groups[0].words, alias.groups[0].words);
         QVERIFY(!repository.search("悲しい", "en").found);
-        QVERIFY(!repository.search("かなしい").found);
-        QVERIFY(!repository.search("カナシイ").found);
-        QVERIFY(!repository.search("きれい").found);
-        QVERIFY(!repository.search("キレイ").found);
         QVERIFY(!repository.search("sad-ja").found); // Japanese case rules unchanged.
         QSettings settings;
         settings.setValue("history/entries", QStringList{});
@@ -429,6 +450,216 @@ private slots:
         QTest::keyClick(input, Qt::Key_Return);
         QCOMPARE(tree->topLevelItem(0)->child(0)->text(0), QString("悲しげ"));
         QCOMPARE(settings.value("history/entries").toStringList(), QStringList{"ja:悲しい"});
+        settings.setValue("history/entries", QStringList{});
+    }
+    void readings() {
+        DictionaryRepository repository;
+        QVERIFY(repository.open(fixture_));
+        // One headword: searched directly, by entry, and reported as a reading.
+        const auto sad = repository.search("かなしい");
+        QVERIFY(sad.found && sad.error.isEmpty());
+        QCOMPARE(sad.language, QString("ja"));
+        QCOMPARE(sad.matchKind, QString("reading"));
+        QCOMPARE(sad.matchedWords, QStringList{"哀しい"});
+        QCOMPARE(sad.groups.size(), 1);
+        QCOMPARE(sad.groups[0].id, QString("alias1")); // Entry 18 only, not the 哀しい homograph (entry 20).
+        QCOMPARE(repository.search("カナシイ").matchedWords, QStringList{"哀しい"});
+        // Two entries with the same headword stay one result; the reading of an unrelated homograph does not leak.
+        const auto pretty = repository.search("きれい");
+        QCOMPARE(pretty.matchedWords, QStringList{"綺麗"});
+        QVERIFY(pretty.spellings.isEmpty());
+        const auto other = repository.search("べつよみ");
+        QCOMPARE(other.matchedWords, QStringList{"綺麗"});
+        QVERIFY(other.groups.isEmpty()); // Only entry 7 (alone in s5); entries 2/3 would bring s1's candidates.
+        // Homophones: a choice of headwords with their first meaning, nothing merged.
+        const auto kikai = repository.search("きかい");
+        QVERIFY(kikai.found);
+        QVERIFY(kikai.groups.isEmpty());
+        QCOMPARE(kikai.choiceKind, QString("reading"));
+        QCOMPARE(kikai.spellings, (QStringList{"機械", "機会"}));
+        QCOMPARE(kikai.choiceHints, (QStringList{"動力で動く仕掛け", "ちょうどよい時"}));
+        // Readings are a Japanese feature: a reading never matches in English.
+        QVERIFY(!repository.search("かなしい", "en").found);
+        QCOMPARE(repository.resolveLanguage("きかい"), QString("ja"));
+        // UI: heading names the headword, and the choice list searches the chosen headword.
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{});
+        MainWindow window(fixture_);
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *heading = window.findChild<QLabel *>("resultHeading");
+        auto *tree = window.findChild<QTreeWidget *>("results");
+        auto *choices = window.findChild<QListWidget *>("spellingChoices");
+        input->setText("かなしい");
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(heading->text().contains("「かなしい」（「哀しい」の読み）の類語候補：1件"));
+        input->setText("きかい");
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(heading->text().contains("「きかい」と読む見出しが2語あります"));
+        QCOMPARE(choices->count(), 2);
+        QCOMPARE(choices->item(0)->text(), QString("機械 — 動力で動く仕掛け"));
+        QCOMPARE(tree->topLevelItemCount(), 0);
+        // Keyboard: Down from the search box goes to the choices, Enter searches the row.
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        input->setFocus();
+        QTest::keyClick(input, Qt::Key_Down);
+        QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(choices));
+        QCOMPARE(choices->currentRow(), 0);
+        QTest::keyClick(choices, Qt::Key_Return);
+        QCOMPARE(input->text(), QString("機械"));
+        QCOMPARE(tree->topLevelItem(0)->child(0)->text(0), QString("装置"));
+        QCOMPARE(settings.value("history/entries").toStringList(), (QStringList{"ja:機械", "ja:きかい", "ja:かなしい"}));
+        settings.setValue("history/entries", QStringList{});
+    }
+    void inflections() {
+        DictionaryRepository repository;
+        QVERIFY(repository.open(fixture_));
+        // Recorded irregular form.
+        const auto went = repository.search("went");
+        QCOMPARE(went.language, QString("en"));
+        QCOMPARE(went.matchKind, QString("inflection"));
+        QCOMPARE(went.matchedWords, QStringList{"go"});
+        QCOMPARE(went.groups[0].words, QStringList{"travel"});
+        QCOMPARE(repository.search("Went").matchedWords, QStringList{"go"}); // Case-folded.
+        // Regular rule, accepted only for a headword of the matching part of speech:
+        // "cats" -> cat (noun) and cat (verb) both qualify through the noun and verb "-s" rules.
+        const auto cats = repository.search("cats");
+        QCOMPARE(cats.matchKind, QString("inflection"));
+        QCOMPARE(cats.matchedWords, QStringList{"cat"});
+        QCOMPARE(cats.groups.size(), 1); // The verb entry's synset has no other members, so only cat1 shows.
+        QCOMPARE(cats.groups[0].words, QStringList{"true cat"});
+        QCOMPARE(repository.search("walked").matchedWords, QStringList{"walk"});
+        QCOMPARE(repository.search("walking").matchedWords, QStringList{"walk"});
+        QVERIFY(!repository.search("walker").found); // "-er" is an adjective rule; walk is a verb.
+        QVERIFY(!repository.search("zzzs").found);
+        // A form of several different headwords becomes a choice.
+        const auto leaves = repository.search("leaves");
+        QCOMPARE(leaves.choiceKind, QString("inflection"));
+        QCOMPARE(leaves.spellings, (QStringList{"leaf", "leave"}));
+        // A headword wins over a form, and the form is offered separately.
+        const auto saw = repository.search("saw");
+        QVERIFY(saw.matchKind.isEmpty());
+        QCOMPARE(saw.formOf, QStringList{"see"});
+        QCOMPARE(saw.formOfKind, QString("inflection"));
+        QCOMPARE(saw.formOfHints, QStringList{"perceive by sight"});
+        // Inflections are English only.
+        QVERIFY(!repository.search("went", "ja").found);
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{});
+        MainWindow window(fixture_);
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *heading = window.findChild<QLabel *>("resultHeading");
+        auto *button = window.findChild<QPushButton *>("formOfButton");
+        auto *choices = window.findChild<QListWidget *>("spellingChoices");
+        input->setText("went");
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(heading->text().contains("「went」（「go」の活用形）の類語候補：1件"));
+        QVERIFY(button->isHidden());
+        input->setText("leaves");
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(heading->text().contains("「leaves」は「leaf」「leave」の活用形です"));
+        QCOMPARE(choices->item(1)->text(), QString("leave — permission to be absent"));
+        input->setText("saw");
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(!button->isHidden());
+        QCOMPARE(button->text(), QString("「see」の活用形としても検索"));
+        button->click();
+        QCOMPARE(input->text(), QString("see"));
+        QVERIFY(heading->text().contains("「see」の類語候補：1件"));
+        settings.setValue("history/entries", QStringList{});
+    }
+    void matchedEntriesAfterChoice() {
+        DictionaryRepository repository;
+        QVERIFY(repository.open(fixture_));
+        const auto groupIds = [](const QVector<MeaningGroup> &groups) {
+            QStringList ids;
+            for (const auto &group : groups) ids.append(group.id);
+            return ids;
+        };
+        // A plain headword search still covers every entry of "see" (noun and verb).
+        QCOMPARE(groupIds(repository.search("see").groups), (QStringList{"see1", "seeN"}));
+        // "saw" is registered as a form of the verb "see" only (entry 45).
+        for (const auto &input : {"saw", "Saw", "SAW"}) {
+            const auto saw = repository.search(input);
+            QVERIFY(saw.found && saw.error.isEmpty());
+            QCOMPARE(saw.formOf, QStringList{"see"});
+            QCOMPARE(saw.formOfKind, QString("inflection"));
+            QCOMPARE(saw.formOfEntries, (QVector<QVector<qint64>>{{45}}));
+            QCOMPARE(saw.formOfHints, QStringList{"perceive by sight"}); // From entry 45, not the noun 39.
+            // The original search shows "saw" itself, never the meanings of "see".
+            QVERIFY(!groupIds(saw.groups).contains("see1") && !groupIds(saw.groups).contains("seeN"));
+            QVERIFY(saw.relatedGroups.isEmpty());
+        }
+        QVERIFY(repository.search("saw").matchedWords.isEmpty());
+        QCOMPARE(repository.search("Saw").matchedWords, QStringList{"saw"}); // Case-folded display kept.
+        QCOMPARE(repository.search("SAW").matchKind, QString("normalized"));
+        // Searching the matched entry only: no noun meaning, synonym or related word.
+        const auto see = repository.searchEntries("see", "en", {45});
+        QVERIFY(see.found && see.error.isEmpty());
+        QCOMPARE(groupIds(see.groups), QStringList{"see1"});
+        QCOMPARE(see.groups[0].words, QStringList{"understand"});
+        QVERIFY(see.relatedGroups.isEmpty());
+        QVERIFY(see.matchedWords.isEmpty());
+        // Ids that are not this headword in this language are ignored, never widened.
+        QVERIFY(!repository.searchEntries("see", "en", {40}).found);
+        QVERIFY(!repository.searchEntries("see", "ja", {45}).found);
+        // Several bases: each choice keeps its own entries and hint.
+        const auto leaves = repository.search("leaves");
+        QCOMPARE(leaves.spellings, (QStringList{"leaf", "leave"}));
+        QCOMPARE(leaves.choiceEntries, (QVector<QVector<qint64>>{{47}, {48}}));
+        QCOMPARE(leaves.choiceHints, (QStringList{"green part of a plant", "permission to be absent"}));
+        QCOMPARE(groupIds(repository.searchEntries("leave", "en", {48}).groups), QStringList{});
+        QCOMPARE(groupIds(repository.search("leave").groups), QStringList{"leaveV"}); // The verb has "depart".
+        // Readings keep their entries too; case choices stay plain headword searches.
+        QCOMPARE(repository.search("きかい").choiceEntries, (QVector<QVector<qint64>>{{26}, {27}}));
+        const auto caseChoice = repository.search("Us");
+        QCOMPARE(caseChoice.choiceKind, QString("case"));
+        QCOMPARE(caseChoice.choiceEntries, (QVector<QVector<qint64>>{}));
+
+        // UI: the single form-of button and the choice list both stay on the matched entries.
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{});
+        MainWindow window(fixture_);
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *heading = window.findChild<QLabel *>("resultHeading");
+        auto *tree = window.findChild<QTreeWidget *>("results");
+        auto *button = window.findChild<QPushButton *>("formOfButton");
+        auto *choices = window.findChild<QListWidget *>("spellingChoices");
+        const auto treeText = [tree] {
+            QStringList lines;
+            for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+                lines.append(tree->topLevelItem(i)->text(0));
+                for (int j = 0; j < tree->topLevelItem(i)->childCount(); ++j)
+                    lines.append(tree->topLevelItem(i)->child(j)->text(0));
+            }
+            return lines.join('\n');
+        };
+        for (const auto &typed : {"saw", "SAW"}) {
+            settings.setValue("history/entries", QStringList{});
+            input->setText(typed);
+            QTest::keyClick(input, Qt::Key_Return);
+            QVERIFY(!button->isHidden());
+            QCOMPARE(button->text(), QString("「see」の活用形としても検索"));
+            button->click();
+            QCOMPARE(input->text(), QString("see"));
+            QVERIFY(heading->text().contains("— 「see」の類語候補：1件（1意味）"));
+            QVERIFY(!heading->text().contains("関連語"));
+            QVERIFY(treeText().contains("understand"));
+            QVERIFY(!treeText().contains("bishop")); // No noun meaning, synonym or related word.
+            QVERIFY(!treeText().contains("diocese"));
+            QCOMPARE(settings.value("history/entries").toStringList(),
+                     (QStringList{"en:see", "en:" + QString::fromUtf8(typed)}));
+        }
+        input->setText("leaves");
+        QTest::keyClick(input, Qt::Key_Return);
+        QCOMPARE(choices->item(1)->text(), QString("leave — permission to be absent"));
+        emit choices->itemActivated(choices->item(1));
+        QCOMPARE(input->text(), QString("leave"));
+        QVERIFY(!treeText().contains("depart")); // The verb "leave" is not searched.
+        QVERIFY(heading->text().contains("— 「leave」の類語候補：0件"));
+        QCOMPARE(settings.value("history/entries").toStringList().first(), QString("en:leave"));
+        // Re-searching from history is a plain headword search (the saved format is unchanged).
+        QVERIFY(QStringList(settings.value("history/entries").toStringList()).contains("en:leaves"));
         settings.setValue("history/entries", QStringList{});
     }
     void historyMigration() {
@@ -870,9 +1101,52 @@ private slots:
             QCOMPARE(sad.groups[i].id, sadHeadword.groups[i].id);
             QCOMPARE(sad.groups[i].words, sadHeadword.groups[i].words);
         }
-        QVERIFY(!repository.search("かなしい").found);
-        QVERIFY(!repository.search("カナシイ").found);
         qInfo("Sad spelling alias: %d candidates in %d meanings", sad.candidateCount(), int(sad.groups.size()));
+        // Readings: one headword is searched directly; homophones become a choice.
+        const auto sadReading = repository.search("かなしい");
+        QCOMPARE(sadReading.matchKind, QString("reading"));
+        QCOMPARE(sadReading.matchedWords, QStringList{"哀しい"});
+        QCOMPARE(sadReading.candidateCount(), sadHeadword.candidateCount());
+        const auto kikai = repository.search("きかい");
+        QCOMPARE(kikai.choiceKind, QString("reading"));
+        QVERIFY(kikai.spellings.contains("機械") && kikai.spellings.contains("機会"));
+        QCOMPARE(kikai.choiceHints.size(), kikai.spellings.size());
+        QVERIFY(!kikai.choiceHints.contains(QString()));
+        QCOMPARE(repository.search("綺麗").groups.size(), repository.search("きれい").groups.size());
+        // English inflections: recorded irregular forms, regular rules, choices, and headword-first.
+        QCOMPARE(repository.search("went").matchedWords, QStringList{"go"});
+        QCOMPARE(repository.search("children").matchedWords, QStringList{"child"});
+        QCOMPARE(repository.search("happier").matchedWords, QStringList{"happy"});
+        QCOMPARE(repository.search("cats").matchedWords, QStringList{"cat"});
+        QCOMPARE(repository.search("walked").matchedWords, QStringList{"walk"});
+        QCOMPARE(repository.search("studies").matchedWords, QStringList{"study"});
+        QCOMPARE(repository.search("leaves").choiceKind, QString("inflection"));
+        const auto saw = repository.search("saw");
+        QVERIFY(saw.matchKind.isEmpty());
+        QVERIFY(saw.formOf.contains("see"));
+        // "saw" is a form of the verb "see" only. Choosing it must not bring in the noun "see"
+        // (a bishop's seat), which a plain headword search of "see" does include.
+        for (const auto &typed : {"Saw", "SAW"}) {
+            const auto folded = repository.search(typed);
+            QCOMPARE(folded.formOf, saw.formOf);
+            QCOMPARE(folded.formOfEntries, saw.formOfEntries);
+        }
+        const auto seeVerb = repository.searchEntries("see", "en", saw.formOfEntries.value(saw.formOf.indexOf("see")));
+        QVERIFY(seeVerb.found && !seeVerb.groups.isEmpty());
+        for (const auto &group : seeVerb.groups) QVERIFY2(group.id.endsWith("-v"), qPrintable(group.id));
+        for (const auto &group : seeVerb.relatedGroups) QVERIFY2(group.id.endsWith("-v"), qPrintable(group.id));
+        // The noun "see" has the lower entry id, so a lookup by word alone would describe the
+        // choice with the bishop's-seat meaning. The hint must come from the verb entry.
+        const auto seeHint = saw.formOfHints.value(saw.formOf.indexOf("see"));
+        QVERIFY2(!seeHint.isEmpty() && !seeHint.contains("bishop"), qPrintable(seeHint));
+        qInfo("see from saw: %d meanings (verb entry only), hint: %s", int(seeVerb.groups.size()), qPrintable(seeHint));
+        for (const auto &word : {"かなしい", "きかい", "こう", "went", "cats", "studies"}) {
+            QElapsedTimer timer; timer.start();
+            const auto result = repository.search(QString::fromUtf8(word));
+            qInfo("Form/reading %s: %.3f ms, kind=%s, headwords=%s", word, timer.nsecsElapsed() / 1000000.0,
+                  qPrintable(result.matchKind.isEmpty() ? result.choiceKind : result.matchKind),
+                  qPrintable((result.matchedWords.isEmpty() ? result.spellings : result.matchedWords).join(',')));
+        }
         const auto shurei = repository.wordDetails("秀麗", "ja", "wnja:2.1:wnja-00217728-a");
         QCOMPARE(shurei.readings, QStringList{"しゅうれい"});
         QVERIFY(shurei.otherMeanings.isEmpty());
@@ -936,12 +1210,13 @@ private slots:
             QVERIFY(!QToolTip::text().contains("読み："));
             QVERIFY(window.grab().save("preview-english.png"));
         }
-        for (const auto &word : {"AFGHAN", "beautiful", "存在しないzzzz", "ＡＩ"}) {
+        const QList<QPair<const char *, QString>> previews = {
+            {"AFGHAN", "AFGHAN"}, {"beautiful", "beautiful"}, {"存在しないzzzz", "missing"}, {"ＡＩ", "fullwidth"},
+            {"きかい", "reading-choice"}, {"かなしい", "reading"}, {"went", "inflection"}, {"saw", "form-of"}};
+        for (const auto &[word, name] : previews) {
             input->setText(QString::fromUtf8(word));
             QTest::keyClick(input, Qt::Key_Return);
             QApplication::processEvents();
-            const auto name = QString::fromUtf8(word) == "ＡＩ" ? QString("fullwidth") :
-                QString::fromUtf8(word).startsWith("存在") ? QString("missing") : QString::fromUtf8(word);
             QVERIFY(window.grab().save("preview-" + name + ".png"));
         }
         window.close();
