@@ -227,3 +227,40 @@ DB欠落・破損、履歴100件と永続化、Enter検索、コピー、0件、
 ```powershell
 .venv/Scripts/python.exe -m unittest discover -s tests -p test_dictionary_aliases.py
 ```
+## Kaikki の変換と品質検証（開発用）
+
+AGENTS.md 第14節の第1段階として、日本語版 Wiktionary の Kaikki 抽出データを
+独立した `data/kaikki.sqlite` に変換できます。Python 標準ライブラリだけを使います。
+集計で比較するため、先に上記の手順で WordNet の `data/dictionary.sqlite` を用意してください。
+
+採用した入力は [Kaikki の日本語版生データ](https://kaikki.org/jawiktionary/rawdata.html) の
+2026-11-01 ダンプ（2026-11-02 抽出、公開ページ記載のコミット `19f9a30` / `6f96ddf`）です。
+通常の変換は、展開後の JSONL の SHA-256
+`491dbaf5fbf7c34cf4d033cdac59776627287eb5072799e7581ecef495717edd`
+を照合します。配布URLのファイルは更新されるため、取得した入力を日付付きで保存してください。
+
+```powershell
+python tools/import_kaikki.py .wn/kaikki-ja-2026-11-01.jsonl.gz
+```
+
+通常の変換では、SQLite の整合性検査後に出力を置き換えます。集計は標準出力に JSON で出ます。
+更新候補は下記の手順で別途評価できます。この手順で作る一時 DB は処理後に破棄されます。
+集計と出典を確認して採用を決めた後、スクリプト内の固定値と出典情報を更新します。
+
+```powershell
+python tools/import_kaikki.py .wn/kaikki-candidate.jsonl.gz --evaluate-candidate --source-url https://kaikki.org/jawiktionary/raw-wiktextract-data.jsonl.gz --dump-date YYYY-MM-DD
+```
+
+採用版での集計結果です。見出し数は言語と表記の組で数え、同じ表記の辞書項目はDB内で区別しています。
+
+| 言語 | 見出し | 語義 | WordNet に同表記なし | 翻訳関係（見出しの収録率） |
+|---|---:|---:|---:|---:|
+| 日本語 | 128,380 | 201,379 | 94,380 | 32,237（12.24%） |
+| 英語 | 58,509 | 107,054 | 34,072 | 442（0.29%） |
+
+変換後のDBは約152 MBです。収録できた翻訳はすべて見出し側に付き、語義ラベルがある場合は原文を保持します。
+このスナップショットでは、類語・反意語・関連語の関係先言語が抽出結果から確認できず、収録件数はいずれも0件でした。
+[日本語版の抽出コード](https://github.com/tatuylonen/wiktextract/blob/19f9a30/src/wiktextract/extractor/ja/linkage.py)
+では異言語へのリンクも同じ形式にまとめられるため、見出しの言語を一律には引き継げません。
+語義の補足に使える一方、類語の補足に使うには関係先言語を確認できるデータが必要です。
+Qt アプリと配布物への組み込みは第2段階で扱います。
