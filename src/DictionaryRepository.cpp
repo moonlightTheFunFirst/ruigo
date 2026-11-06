@@ -35,7 +35,7 @@ bool DictionaryRepository::open(const QString &path) {
         return false;
     }
     QSqlQuery check(db_);
-    if (!check.exec("PRAGMA user_version") || !check.next() || check.value(0).toInt() != 2) {
+    if (!check.exec("PRAGMA user_version") || !check.next() || check.value(0).toInt() != 3) {
         error_ = QStringLiteral("辞書DBの形式が未対応、または破損しています。日英辞書DBを再生成してください。");
     } else if (!check.exec("SELECT l.word,l.language,l.forms_json,l.search_key,src.reading_mode,s.id,s.source,d.definition,d.language,se.lemma_id "
                            "FROM lemmas l JOIN sources src ON src.id=l.source JOIN senses se ON se.lemma_id=l.id "
@@ -43,6 +43,8 @@ bool DictionaryRepository::open(const QString &path) {
                            "LEFT JOIN synset_definitions d ON d.synset_id=s.id LIMIT 0")) {
         error_ = QStringLiteral("辞書DBの構造が不正です。\n%1").arg(check.lastError().text());
     }
+    if (error_.isEmpty() && !check.exec("SELECT lemma_id,language,word FROM lemma_aliases LIMIT 0"))
+        error_ = QStringLiteral("辞書DBの別表記索引が不正です。再生成してください。");
     check.finish();
     if (!error_.isEmpty()) db_.close();
     return error_.isEmpty();
@@ -69,6 +71,19 @@ DictionaryRepository::Lookup DictionaryRepository::lookup(const QString &input, 
     query.bindValue(":word", input);
     if (!query.exec()) { result.error = query.lastError().text(); return result; }
     if (query.next()) { result.word = query.value(0).toString(); result.found = true; return result; }
+    const auto aliases = [&](const QString &spelling) {
+        QSqlQuery aliasQuery(db_);
+        aliasQuery.prepare("SELECT lemma_id FROM lemma_aliases WHERE language=:language AND word=:word");
+        aliasQuery.bindValue(":language", language);
+        aliasQuery.bindValue(":word", spelling);
+        if (!aliasQuery.exec()) { result.error = aliasQuery.lastError().text(); return; }
+        while (aliasQuery.next()) result.lemmaIds.append(aliasQuery.value(0).toLongLong());
+        if (aliasQuery.lastError().isValid()) result.error = aliasQuery.lastError().text();
+        result.found = !result.lemmaIds.isEmpty();
+        if (result.found) result.word = spelling;
+    };
+    aliases(input);
+    if (result.found || !result.error.isEmpty()) return result;
     QString word = input;
     for (auto &c : word)
         if ((c.unicode() >= 0xff21 && c.unicode() <= 0xff3a) || (c.unicode() >= 0xff41 && c.unicode() <= 0xff5a))
@@ -77,7 +92,8 @@ DictionaryRepository::Lookup DictionaryRepository::lookup(const QString &input, 
     query.bindValue(":word", word);
     if (!query.exec()) { result.error = query.lastError().text(); return result; }
     if (query.next()) { result.word = query.value(0).toString(); result.found = true; return result; }
-    if (language != "en") return result;
+    if (word != input) aliases(word);
+    if (result.found || !result.error.isEmpty() || language != "en") return result;
     query.prepare("SELECT DISTINCT word FROM lemmas WHERE language=:language AND search_key=:key ORDER BY word");
     query.bindValue(":language", language);
     query.bindValue(":key", word.toLower());
@@ -125,6 +141,12 @@ SearchResult DictionaryRepository::search(const QString &input, const QString &r
     if (!result.error.isEmpty() || !result.found || !result.spellings.isEmpty()) return result;
     const auto word = selected.word;
     const auto language = result.language;
+    QString match = "matched.word=:word";
+    if (!selected.lemmaIds.isEmpty()) {
+        QStringList parameters;
+        for (int i = 0; i < selected.lemmaIds.size(); ++i) parameters.append(":lemma" + QString::number(i));
+        match = "matched.id IN (" + parameters.join(',') + ")";
+    }
     QSqlQuery query(db_);
     query.prepare("SELECT DISTINCT s.id, COALESCE(d.definition,''), candidate.word "
         "FROM lemmas matched JOIN senses hit ON hit.lemma_id=matched.id "
@@ -132,11 +154,12 @@ SearchResult DictionaryRepository::search(const QString &input, const QString &r
         "JOIN senses member ON member.synset_id=s.id "
         "JOIN lemmas candidate ON candidate.id=member.lemma_id "
         "LEFT JOIN synset_definitions d ON d.synset_id=s.id AND d.language=:language "
-        "WHERE matched.language=:language AND matched.word=:word "
-        "AND candidate.language=:language AND candidate.word<>:word "
+        "WHERE matched.language=:language AND " + match + " "
+        "AND candidate.language=:language AND candidate.word<>:word AND candidate.word<>matched.word "
         "ORDER BY s.id, candidate.word");
     query.bindValue(":language", language);
     query.bindValue(":word", word);
+    for (int i = 0; i < selected.lemmaIds.size(); ++i) query.bindValue(":lemma" + QString::number(i), selected.lemmaIds[i]);
     if (!query.exec()) {
         result.error = QStringLiteral("辞書の検索に失敗しました。\n%1").arg(query.lastError().text());
         return result;

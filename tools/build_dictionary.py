@@ -15,13 +15,15 @@ from wn import lmf
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = """
 PRAGMA foreign_keys=ON;
-PRAGMA user_version=2;
+PRAGMA user_version=3;
 CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE sources(id TEXT PRIMARY KEY,version TEXT NOT NULL,language TEXT NOT NULL,url TEXT,license TEXT,reading_mode TEXT NOT NULL);
 CREATE TABLE synsets(id TEXT PRIMARY KEY,source TEXT NOT NULL REFERENCES sources(id),original_id TEXT NOT NULL,pos TEXT,ili TEXT);
 CREATE TABLE lemmas(id INTEGER PRIMARY KEY,source TEXT NOT NULL REFERENCES sources(id),original_id TEXT NOT NULL,word TEXT NOT NULL,language TEXT NOT NULL,pos TEXT,forms_json TEXT NOT NULL,search_key TEXT NOT NULL,UNIQUE(source,original_id));
 CREATE INDEX idx_lemmas_language_word ON lemmas(language,word);
 CREATE INDEX idx_lemmas_language_key ON lemmas(language,search_key);
+CREATE TABLE lemma_aliases(lemma_id INTEGER NOT NULL REFERENCES lemmas(id),language TEXT NOT NULL,word TEXT NOT NULL,PRIMARY KEY(lemma_id,word));
+CREATE INDEX idx_aliases_language_word ON lemma_aliases(language,word);
 CREATE TABLE synset_definitions(synset_id TEXT NOT NULL REFERENCES synsets(id),language TEXT NOT NULL,definition TEXT NOT NULL,PRIMARY KEY(synset_id,language));
 CREATE TABLE senses(source TEXT NOT NULL REFERENCES sources(id),original_id TEXT NOT NULL,synset_id TEXT NOT NULL REFERENCES synsets(id),lemma_id INTEGER NOT NULL REFERENCES lemmas(id),PRIMARY KEY(source,original_id));
 CREATE INDEX idx_senses_lemma ON senses(lemma_id);
@@ -60,7 +62,7 @@ def search_key(word, language):
 
 def validate(path):
     with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
-        if db.execute("PRAGMA user_version").fetchone()[0] != 2:
+        if db.execute("PRAGMA user_version").fetchone()[0] != 3:
             raise ValueError("Dictionary schema is old; regenerate the bilingual DB")
         if db.execute("PRAGMA integrity_check").fetchone() != ("ok",):
             raise ValueError("SQLite integrity check failed")
@@ -81,7 +83,24 @@ def validate(path):
             raise ValueError("Lemma language mismatch")
         if db.execute("SELECT count(*) FROM synset_definitions d JOIN synsets s ON s.id=d.synset_id JOIN sources src ON src.id=s.source WHERE d.language<>src.language").fetchone()[0]:
             raise ValueError("Definition language mismatch")
+        actual_aliases = set(db.execute("SELECT lemma_id,language,word FROM lemma_aliases"))
+        expected_aliases = set()
+        for number, language, word, raw in db.execute("SELECT id,language,word,forms_json FROM lemmas"):
+            entry = {"lemma": {"writtenForm": word}, "forms": json.loads(raw)}
+            expected_aliases.update((number, language, alias) for alias in spelling_aliases(entry, language))
+        if actual_aliases != expected_aliases:
+            raise ValueError("Spelling aliases do not match the dictionary forms")
         return result
+
+
+def spelling_aliases(entry, language):
+    # wnja forms without a script tag are orthographic variants. hira/kana
+    # are readings. OEWN forms include inflections, which remain out of scope.
+    if language != "ja":
+        return []
+    return sorted({f["writtenForm"] for f in entry.get("forms", [])
+                   if not f.get("script") and f.get("writtenForm", "").strip()
+                   and f["writtenForm"] != entry["lemma"]["writtenForm"]})
 
 
 def import_lexicon(db, source, expected_id, language, reading_mode):
@@ -110,6 +129,8 @@ def import_lexicon(db, source, expected_id, language, reading_mode):
         word = lemma["writtenForm"]
         number = db.execute("INSERT INTO lemmas(source,original_id,word,language,pos,forms_json,search_key) VALUES (?,?,?,?,?,?,?)",
             (source_id, entry["id"], word, language, lemma["partOfSpeech"], json.dumps(entry.get("forms", []), ensure_ascii=False), search_key(word, language))).lastrowid
+        db.executemany("INSERT INTO lemma_aliases VALUES (?,?,?)",
+                       [(number, language, alias) for alias in spelling_aliases(entry, language)])
         for sense in entry.get("senses", []):
             db.execute("INSERT INTO senses VALUES (?,?,?,?)", (source_id, sense["id"], sid(sense["synset"]), number))
 

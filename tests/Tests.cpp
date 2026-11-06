@@ -51,7 +51,7 @@ private slots:
             QVERIFY2(db.open(), qPrintable(db.lastError().text()));
             QSqlQuery q(db);
             const QStringList sql = {
-                "PRAGMA user_version=2",
+                "PRAGMA user_version=3",
                 "CREATE TABLE lemmas(id INTEGER PRIMARY KEY,word TEXT,language TEXT,forms_json TEXT DEFAULT '[]')",
                 "CREATE TABLE synsets(id TEXT PRIMARY KEY,source TEXT)",
                 "CREATE TABLE synset_definitions(synset_id TEXT,language TEXT,definition TEXT)",
@@ -68,6 +68,8 @@ private slots:
                 R"(INSERT INTO lemmas VALUES (7,'綺麗','ja','[{"writtenForm":"べつよみ","script":"hira"}]'))",
                 "INSERT INTO senses VALUES ('s5',7)",
                 "INSERT INTO synset_definitions VALUES ('s5','ja','別の同形異義語')",
+                "CREATE TABLE lemma_aliases(lemma_id INTEGER,language TEXT,word TEXT,PRIMARY KEY(lemma_id,word))",
+                "CREATE INDEX idx_alias ON lemma_aliases(language,word)",
                 "CREATE TABLE sources(id TEXT PRIMARY KEY, reading_mode TEXT)",
                 "INSERT INTO sources VALUES ('ja-source','kana'),('en-source','none')",
                 "ALTER TABLE lemmas ADD COLUMN source TEXT DEFAULT 'ja-source'",
@@ -78,7 +80,11 @@ private slots:
                 "CREATE INDEX idx_key ON lemmas(language,search_key)",
                 "INSERT INTO lemmas(id,word,language,source,search_key) VALUES (8,'AI','ja','ja-source','AI'),(9,'人工知能','ja','ja-source','人工知能'),(10,'AI','en','en-source','ai'),(11,'artificial intelligence','en','en-source','artificial intelligence'),(12,'solo','en','en-source','solo'),(13,'solo','ja','ja-source','solo'),(14,'US','en','en-source','us'),(15,'us','en','en-source','us'),(16,'Wi-Fi','ja','ja-source','Wi-Fi'),(17,'café','en','en-source','café')",
                 "INSERT INTO synsets VALUES ('sj','ja-source'),('se','en-source'),('single','en-source')",
-                "INSERT INTO senses VALUES ('sj',8),('sj',9),('sj',13),('se',10),('se',11),('single',12)"
+                "INSERT INTO senses VALUES ('sj',8),('sj',9),('sj',13),('se',10),('se',11),('single',12)",
+                "INSERT INTO lemmas(id,word,language,source,search_key) VALUES (18,'哀しい','ja','ja-source','哀しい'),(19,'悲しげ','ja','ja-source','悲しげ'),(20,'哀しい','ja','ja-source','哀しい'),(21,'無関係な語','ja','ja-source','無関係な語')",
+                "INSERT INTO synsets VALUES ('alias1','ja-source'),('alias2','ja-source')",
+                "INSERT INTO senses VALUES ('alias1',18),('alias1',19),('alias2',20),('alias2',21)",
+                "INSERT INTO lemma_aliases VALUES (18,'ja','悲しい'),(18,'ja','美しい'),(18,'ja','SAD-JA'),(18,'ja','別''表記')"
             };
             for (const auto &statement : sql) QVERIFY(q.exec(statement));
             q.finish();
@@ -122,6 +128,18 @@ private slots:
         }
         QSqlDatabase::removeDatabase("old");
         QVERIFY(!repository.open(oldPath));
+        QVERIFY(repository.error().contains("再生成"));
+        const auto old2Path = temporary_.filePath("old2.sqlite");
+        QVERIFY(QFile::copy(fixture_, old2Path));
+        {
+            auto old = QSqlDatabase::addDatabase("QSQLITE", "old2");
+            old.setDatabaseName(old2Path);
+            QVERIFY(old.open());
+            QSqlQuery query(old);
+            QVERIFY(query.exec("PRAGMA user_version=2"));
+        }
+        QSqlDatabase::removeDatabase("old2");
+        QVERIFY(!repository.open(old2Path));
         QVERIFY(repository.error().contains("再生成"));
     }
     void history() {
@@ -201,6 +219,40 @@ private slots:
         QVERIFY(repository.search("artificial intelligence").found);
         QVERIFY(!repository.search("artificial  intelligence").found);
         QVERIFY(!repository.wordDetails("pretty", "en", "s1").showReadings);
+    }
+    void spellingAliases() {
+        DictionaryRepository repository;
+        QVERIFY(repository.open(fixture_));
+        const auto alias = repository.search("悲しい");
+        QVERIFY(alias.error.isEmpty());
+        QVERIFY(alias.found);
+        QCOMPARE(alias.language, QString("ja"));
+        QCOMPARE(alias.groups.size(), 1);
+        QCOMPARE(alias.groups[0].id, QString("alias1"));
+        QCOMPARE(alias.groups[0].words, QStringList{"悲しげ"});
+        // The alias belongs to entry 18, not unrelated homograph entry 20.
+        QCOMPARE(repository.search("哀しい").groups.size(), 2);
+        QCOMPARE(repository.search("美しい").groups.size(), 2); // Exact headword wins.
+        QCOMPARE(repository.search("別'表記").groups[0].words, alias.groups[0].words);
+        QCOMPARE(repository.search("SAD-JA").language, QString("ja"));
+        QCOMPARE(repository.resolveLanguage("ＳＡＤ-ＪＡ"), QString("ja"));
+        QCOMPARE(repository.search("ＳＡＤ-ＪＡ").groups[0].words, alias.groups[0].words);
+        QVERIFY(!repository.search("悲しい", "en").found);
+        QVERIFY(!repository.search("かなしい").found);
+        QVERIFY(!repository.search("カナシイ").found);
+        QVERIFY(!repository.search("きれい").found);
+        QVERIFY(!repository.search("キレイ").found);
+        QVERIFY(!repository.search("sad-ja").found); // Japanese case rules unchanged.
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{});
+        MainWindow window(fixture_);
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *tree = window.findChild<QTreeWidget *>("results");
+        input->setText("悲しい");
+        QTest::keyClick(input, Qt::Key_Return);
+        QCOMPARE(tree->topLevelItem(0)->child(0)->text(0), QString("悲しげ"));
+        QCOMPARE(settings.value("history/entries").toStringList(), QStringList{"ja:悲しい"});
+        settings.setValue("history/entries", QStringList{});
     }
     void historyMigration() {
         QSettings settings(temporary_.filePath("migration.ini"), QSettings::IniFormat);
@@ -312,7 +364,7 @@ private slots:
     void selfCheck() {
 #ifdef Q_OS_WIN
         const auto executable = QCoreApplication::applicationDirPath() + "/ruigo.exe";
-        for (const auto &path : {fixture_, temporary_.filePath("missing.sqlite"), temporary_.filePath("old.sqlite")}) {
+        for (const auto &path : {fixture_, temporary_.filePath("missing.sqlite"), temporary_.filePath("old.sqlite"), temporary_.filePath("old2.sqlite")}) {
             QProcess process;
             process.start(executable, {"--self-check", "--dictionary", QFileInfo(path).absoluteFilePath()});
             QVERIFY(process.waitForFinished(15000));
@@ -616,6 +668,18 @@ private slots:
                 QVERIFY(!group.definition.isEmpty());
             }
         }
+        const auto sad = repository.search("悲しい");
+        const auto sadHeadword = repository.search("哀しい");
+        QVERIFY(sad.found && sad.error.isEmpty());
+        QCOMPARE(sad.groups.size(), sadHeadword.groups.size());
+        QCOMPARE(sad.candidateCount(), sadHeadword.candidateCount());
+        for (int i = 0; i < sad.groups.size(); ++i) {
+            QCOMPARE(sad.groups[i].id, sadHeadword.groups[i].id);
+            QCOMPARE(sad.groups[i].words, sadHeadword.groups[i].words);
+        }
+        QVERIFY(!repository.search("かなしい").found);
+        QVERIFY(!repository.search("カナシイ").found);
+        qInfo("Sad spelling alias: %d candidates in %d meanings", sad.candidateCount(), int(sad.groups.size()));
         const auto shurei = repository.wordDetails("秀麗", "ja", "wnja:2.1:wnja-00217728-a");
         QCOMPARE(shurei.readings, QStringList{"しゅうれい"});
         QVERIFY(shurei.otherMeanings.isEmpty());

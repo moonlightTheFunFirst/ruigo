@@ -42,7 +42,7 @@ public:
     WordDetails wordDetails(const QString &word, const QString &language,
                             const QString &currentSynset) const;
 private:
-    struct Lookup { QString word; QString error; bool found = false; QStringList spellings; };
+    struct Lookup { QString word; QString error; bool found = false; QStringList spellings; QVector<qint64> lemmaIds; };
     SearchResult resolve(const QString &word, const QString &language, Lookup &selected) const;
     Lookup lookup(const QString &word, const QString &language) const;
     QSqlDatabase db_;
