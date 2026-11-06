@@ -948,6 +948,62 @@ private slots:
         QVERIFY(details->toPlainText().contains("候補を選ぶと"));
         settings.remove("display");
     }
+    void historySelectionFollowsSearch() {
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{});
+        MainWindow window(fixture_);
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *history = window.findChild<QListWidget *>("historyList");
+        const auto searchFor = [&](const QString &word) {
+            input->setText(word);
+            QTest::keyClick(input, Qt::Key_Return);
+        };
+        const auto selectedWord = [&] {
+            const auto selected = history->selectedItems();
+            return selected.size() == 1 ? selected.first()->data(Qt::UserRole + 1).toString() : QString();
+        };
+        searchFor("美しい");
+        QCOMPARE(history->currentRow(), 0);
+        // A new word is inserted at the top and becomes the highlighted row, instead of the
+        // previously selected row staying highlighted at its shifted position.
+        searchFor("綺麗");
+        QCOMPARE(history->count(), 2);
+        QCOMPARE(history->currentRow(), 0);
+        QCOMPARE(selectedWord(), QString("綺麗"));
+        history->setCurrentRow(1); // Searches 美しい from history.
+        QCOMPARE(input->text(), QString("美しい"));
+        searchFor("存在しない選択テスト語");
+        QCOMPARE(history->currentRow(), 0);
+        QCOMPARE(selectedWord(), QString("存在しない選択テスト語"));
+        // Re-searching an existing word keeps its position and highlights it there.
+        searchFor("美しい");
+        QCOMPARE(history->item(2)->data(Qt::UserRole + 1).toString(), QString("美しい"));
+        QCOMPARE(history->currentRow(), 2);
+        QCOMPARE(selectedWord(), QString("美しい"));
+        // Deleting moves the selection to the row that took its place (or the new last row)
+        // and keeps the focus in the list, without searching.
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        history->setCurrentRow(0); // Searches 存在しない選択テスト語.
+        history->setFocus();
+        QTest::keyClick(history, Qt::Key_Delete);
+        QCOMPARE(history->count(), 2);
+        QCOMPARE(history->currentRow(), 0);
+        QCOMPARE(selectedWord(), QString("綺麗"));
+        QCOMPARE(input->text(), QString("存在しない選択テスト語"));
+        QVERIFY(history->hasFocus());
+        history->setCurrentRow(1); // Searches 美しい, the last row.
+        QTest::keyClick(history, Qt::Key_Delete);
+        QCOMPARE(history->count(), 1);
+        QCOMPARE(history->currentRow(), 0);
+        QCOMPARE(selectedWord(), QString("綺麗"));
+        QCOMPARE(input->text(), QString("美しい"));
+        QVERIFY(history->hasFocus());
+        QTest::keyClick(history, Qt::Key_Delete);
+        QCOMPARE(history->count(), 0);
+        QCOMPARE(history->currentRow(), -1);
+        settings.setValue("history/entries", QStringList{});
+    }
     void displaySettings() {
         QSettings settings;
         settings.remove("display");

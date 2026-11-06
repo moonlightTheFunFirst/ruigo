@@ -484,9 +484,14 @@ void MainWindow::deleteHistory() {
     if (!item) return;
     history_.remove(item->data(Qt::UserRole + 1).toString(), item->data(Qt::UserRole).toString());
     QSignalBlocker blocker(historyList_);
-    delete historyList_->takeItem(historyList_->row(item));
+    const auto row = historyList_->row(item);
+    delete historyList_->takeItem(row);
     historyList_->setCurrentRow(-1);
     refreshHistory(); // The remaining same-spelling row may no longer need its label.
+    // Keep working in the list: the row that moved up into place (or the new last row)
+    // becomes current, so Delete can be pressed again. Selecting it does not search.
+    if (historyList_->count() > 0) historyList_->setCurrentRow(qMin(row, historyList_->count() - 1));
+    historyList_->setFocus();
 }
 void MainWindow::search(const QString &input, const QString &requestedLanguage, bool record,
                         const QVector<qint64> &entries, const QString &originalInput) {
@@ -502,6 +507,19 @@ void MainWindow::search(const QString &input, const QString &requestedLanguage, 
     language_ = lastResult_.language;
     alternativeLanguage_ = lastResult_.alternativeLanguage;
     if (record) { history_.add(word, language_); refreshHistory(); }
+    // Highlight the searched word's history row (a new entry is inserted at the top, so the
+    // previously selected row would otherwise stay highlighted at its shifted position).
+    {
+        QSignalBlocker blocker(historyList_);
+        QListWidgetItem *match = nullptr;
+        for (int i = 0; i < historyList_->count() && !match; ++i) {
+            auto *item = historyList_->item(i);
+            if (item->data(Qt::UserRole + 1).toString() == word && item->data(Qt::UserRole).toString() == language_)
+                match = item;
+        }
+        if (match) historyList_->setCurrentItem(match);
+        else { historyList_->setCurrentRow(-1); historyList_->clearSelection(); }
+    }
     updateKaikki();
     showResult();
 }
