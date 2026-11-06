@@ -65,29 +65,40 @@ python3 -m venv .venv
 
 ## Windowsビルド・起動
 
-Qt 6のMinGW版（Widgets / Sql / Test、QSQLITEプラグイン）、対応するMinGW、
+推奨環境はQt公式インストーラーのQt 6 MinGW 64-bit版です。
+Qt（Widgets / Sql / Test、QSQLITEプラグイン）、対応するMinGW、
 CMake 3.21以上、Ninjaが必要です（CMake / CTest / NinjaはPATHに配置）。
-Qtは`QT_BIN`の指定を優先し、未指定ならPATH上の`qmake6.exe` / `qmake.exe`、
-続いてユーザーフォルダおよび各ドライブ直下の`Qt/<バージョン>/mingw_64/bin`から
-Qt 6 MinGW版を検出します（同じQtフォルダ内は新しいバージョン順）。
+Qtは`QT_BIN`の指定を優先し、未指定ならユーザーフォルダおよび各ドライブ直下の
+`Qt/6.x.x/mingw_64/bin`から新しいバージョン順に検出します。
+PATH上の`qmake6.exe` / `qmake.exe`は最後の候補です。
 MinGWは`MINGW_BIN`を優先し、未指定ならQtと同じbin（MSYS2）、
 またはそのQtインストール先の`Tools/mingw*_64/bin`から検出します。
 Tools内に複数のMinGWがある場合は、Qtに対応するものを`MINGW_BIN`で指定してください。
 検出したQtのバージョンと両方のパスは実行時に表示します。
+MSYS2のQtはビルド・テストには使えますが、windeployqtだけでは依存DLLが揃わないため、
+このスクリプトによる配布には使えません。配布には公式版を選択してください。
 
 ```powershell
-# 必要なときだけ上書き（実際のインストール先に合わせる。以下はMSYS2の例）
-$env:QT_BIN = 'D:\msys64\mingw64\bin'
-$env:MINGW_BIN = 'D:\msys64\mingw64\bin'
+# 必要なときだけ上書き（実際のインストール先に合わせる）
+$env:QT_BIN = 'D:\Qt\6.8.2\mingw_64\bin'
+$env:MINGW_BIN = 'D:\Qt\Tools\mingw1310_64\bin'
 powershell -ExecutionPolicy Bypass -File win/scripts/build.ps1
 powershell -ExecutionPolicy Bypass -File win/scripts/build.ps1 -Run
 powershell -ExecutionPolicy Bypass -File win/scripts/build.ps1 -Deploy
+powershell -ExecutionPolicy Bypass -File win/scripts/build.ps1 -Rebuild -Deploy
 ```
 
 splitFiler同様の`build_and_run.bat`、`rebuild_and_run.bat`、
 `rebuild_and_deploy.bat`も使用できます。ビルド後にテストを実施します。
 失敗時の詳細は`win/build/mingw-release/test-results.txt`。
+QtやMinGWを切り替えたときは、古いQtのパスがCMakeキャッシュに残るため、
+`-Rebuild`を付けるか`win/build/mingw-release`を削除してください。
+`-Rebuild`はこのビルドフォルダをキャッシュごと作り直します。
 配布は`win/output/`全体をコピーしてください。Qt DLL、QSQLITE、辞書、ライセンスを含みます。
+`-Deploy`は古いDLLが残らないよう`win/output/`を作り直します。手作業のファイルは置かないでください。
+SQLドライバは不要なものを除外し、MinGWランタイムをwindeployqtで同梱します。
+配布後はPATHをWindowsのSystem32とWindowsフォルダだけにした子プロセスで5秒間の
+起動確認を行います。途中終了はエラーとし、確認後は自分で起動したプロセスだけを終了します。
 実行中のアプリを強制終了しないため、再ビルド時は自分でアプリを閉じてください。
 ビルド・配布先の実行ファイルが使用中なら、ビルド開始前に終了を促すエラーを表示します。
 `-Deploy`（`rebuild_and_deploy.bat`を含む）は辞書DBがない場合、CMake実行前に
