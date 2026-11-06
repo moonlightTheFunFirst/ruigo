@@ -5,6 +5,8 @@
 #include <QClipboard>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
+#include <QProcess>
 #include <QTimer>
 #include <QAction>
 #include <QDialogButtonBox>
@@ -45,7 +47,7 @@ private slots:
             QVERIFY2(db.open(), qPrintable(db.lastError().text()));
             QSqlQuery q(db);
             const QStringList sql = {
-                "PRAGMA user_version=1",
+                "PRAGMA user_version=2",
                 "CREATE TABLE lemmas(id INTEGER PRIMARY KEY,word TEXT,language TEXT,forms_json TEXT DEFAULT '[]')",
                 "CREATE TABLE synsets(id TEXT PRIMARY KEY,source TEXT)",
                 "CREATE TABLE synset_definitions(synset_id TEXT,language TEXT,definition TEXT)",
@@ -61,7 +63,18 @@ private slots:
                 // Unrelated homograph must not leak its reading/meaning into s1.
                 R"(INSERT INTO lemmas VALUES (7,'綺麗','ja','[{"writtenForm":"べつよみ","script":"hira"}]'))",
                 "INSERT INTO senses VALUES ('s5',7)",
-                "INSERT INTO synset_definitions VALUES ('s5','ja','別の同形異義語')"
+                "INSERT INTO synset_definitions VALUES ('s5','ja','別の同形異義語')",
+                "CREATE TABLE sources(id TEXT PRIMARY KEY, reading_mode TEXT)",
+                "INSERT INTO sources VALUES ('ja-source','kana'),('en-source','none')",
+                "ALTER TABLE lemmas ADD COLUMN source TEXT DEFAULT 'ja-source'",
+                "ALTER TABLE lemmas ADD COLUMN search_key TEXT DEFAULT ''",
+                "UPDATE lemmas SET source='en-source' WHERE language='en'",
+                "UPDATE lemmas SET search_key=lower(word)",
+                "CREATE INDEX idx_word ON lemmas(language,word)",
+                "CREATE INDEX idx_key ON lemmas(language,search_key)",
+                "INSERT INTO lemmas(id,word,language,source,search_key) VALUES (8,'AI','ja','ja-source','AI'),(9,'人工知能','ja','ja-source','人工知能'),(10,'AI','en','en-source','ai'),(11,'artificial intelligence','en','en-source','artificial intelligence'),(12,'solo','en','en-source','solo'),(13,'solo','ja','ja-source','solo'),(14,'US','en','en-source','us'),(15,'us','en','en-source','us'),(16,'Wi-Fi','ja','ja-source','Wi-Fi'),(17,'café','en','en-source','café')",
+                "INSERT INTO synsets VALUES ('sj','ja-source'),('se','en-source'),('single','en-source')",
+                "INSERT INTO senses VALUES ('sj',8),('sj',9),('sj',13),('se',10),('se',11),('single',12)"
             };
             for (const auto &statement : sql) QVERIFY(q.exec(statement));
             q.finish();
@@ -94,6 +107,18 @@ private slots:
         corrupt.write("not sqlite"); corrupt.close();
         QVERIFY(!repository.open(corrupt.fileName()));
         QVERIFY(repository.open(fixture_));
+        const auto oldPath = temporary_.filePath("old.sqlite");
+        QVERIFY(QFile::copy(fixture_, oldPath));
+        {
+            auto old = QSqlDatabase::addDatabase("QSQLITE", "old");
+            old.setDatabaseName(oldPath);
+            QVERIFY(old.open());
+            QSqlQuery query(old);
+            QVERIFY(query.exec("PRAGMA user_version=1"));
+        }
+        QSqlDatabase::removeDatabase("old");
+        QVERIFY(!repository.open(oldPath));
+        QVERIFY(repository.error().contains("再生成"));
     }
     void history() {
         const auto file = temporary_.filePath("history.ini");
@@ -104,7 +129,7 @@ private slots:
             history.add(" 50 ", "ja");
             history.add("   ", "ja");
             history.add("50", "en");
-            QCOMPARE(history.words("ja").size(), 100);
+            QCOMPARE(history.words("ja").size(), 99);
             QCOMPARE(history.words("ja").first(), QString("109"));
             QCOMPARE(history.words("ja").indexOf("50"), 59);
             QCOMPARE(history.words("ja").count("50"), 1);
@@ -124,7 +149,175 @@ private slots:
         QCOMPARE(history.words("ja").first(), QString("109"));
         QCOMPARE(history.words("ja").at(58), QString("編集済み"));
         QVERIFY(!history.words("ja").contains("108"));
-        QCOMPARE(history.words("ja").size(), 99);
+        QCOMPARE(history.words("ja").size(), 98);
+    }
+    void autoLanguage() {
+        DictionaryRepository repository;
+        QVERIFY(repository.open(fixture_));
+        for (const auto &word : {QStringLiteral("USBメモリ"), QStringLiteral("3日"), QStringLiteral("ー"), QStringLiteral("ｰ"), QStringLiteral("々"), QStringLiteral("〆"), QStringLiteral("〇"), QStringLiteral("𠮷")})
+            QCOMPARE(DictionaryRepository::preferredLanguage(word), QString("ja"));
+        for (const auto &word : {QStringLiteral("beautiful"), QStringLiteral("U．S．"), QStringLiteral("ＢＥＡＵＴＩＦＵＬ"), QStringLiteral("café"), QStringLiteral("naïve")})
+            QCOMPARE(DictionaryRepository::preferredLanguage(word), QString("en"));
+        QCOMPARE(DictionaryRepository::preferredLanguage("100%"), QString("ja"));
+        const auto english = repository.search("Beautiful");
+        QVERIFY(english.error.isEmpty());
+        QCOMPARE(english.language, QString("en"));
+        QCOMPARE(english.candidateCount(), 1);
+        QCOMPARE(english.groups[0].words, QStringList{"pretty"});
+        QCOMPARE(repository.search("ＢＥＡＵＴＩＦＵＬ").candidateCount(), 1);
+        QCOMPARE(repository.search("CAFÉ").language, QString("en"));
+        QVERIFY(repository.search("CAFÉ").found);
+        const auto ai = repository.search("AI");
+        QCOMPARE(ai.language, QString("en"));
+        QCOMPARE(ai.alternativeLanguage, QString("ja"));
+        QVERIFY(!ai.groups[0].words.contains("人工知能"));
+        QCOMPARE(repository.search("AI", "ja").alternativeLanguage, QString("en"));
+        QCOMPARE(repository.search("Wi-Fi").language, QString("ja"));
+        QVERIFY(!repository.search("Wi-Fi", "en").found); // Saved language never falls back.
+        const auto solo = repository.search("solo");
+        QVERIFY(solo.found);
+        QVERIFY(solo.groups.isEmpty());
+        QCOMPARE(solo.language, QString("en"));
+        QCOMPARE(solo.alternativeLanguage, QString("ja"));
+        QVERIFY(repository.search("US").error.isEmpty());
+        QVERIFY(repository.search("us").error.isEmpty());
+        const auto ambiguous = repository.search("Us");
+        QVERIFY(ambiguous.error.isEmpty());
+        QCOMPARE(ambiguous.spellings, (QStringList{"US", "us"}));
+        QVERIFY(ambiguous.found && ambiguous.groups.isEmpty());
+        QCOMPARE(repository.resolveLanguage("Us"), QString("en"));
+        QCOMPARE(repository.resolveLanguage("Wi-Fi"), QString("ja"));
+        QCOMPARE(repository.search("ＡＩ").alternativeLanguage, QString("ja"));
+        QVERIFY(repository.search("ＡＩ", "ja").found);
+        QVERIFY(!repository.search("ｷﾚｲ", "ja").found); // Kana normalization is unchanged.
+        DictionaryRepository closed;
+        QCOMPARE(closed.resolveLanguage("Us"), QString("en"));
+        QCOMPARE(closed.resolveLanguage("美しい"), QString("ja"));
+        QVERIFY(repository.search("ice  cream").groups.isEmpty());
+        QVERIFY(repository.search("artificial intelligence").found);
+        QVERIFY(!repository.search("artificial  intelligence").found);
+        QVERIFY(!repository.wordDetails("pretty", "en", "s1").showReadings);
+    }
+    void historyMigration() {
+        QSettings settings(temporary_.filePath("migration.ini"), QSettings::IniFormat);
+        settings.setValue("history/ja", QStringList{"AI", "美しい", "AI"});
+        settings.setValue("history/en", QStringList{"AI", "a:b"});
+        SearchHistory history(settings);
+        QCOMPARE(history.entries().size(), 4);
+        QCOMPARE(settings.value("history/entries").toStringList(), (QStringList{"ja:AI", "ja:美しい", "en:AI", "en:a:b"}));
+        QVERIFY(settings.contains("history/ja"));
+        history.remove("AI", "ja");
+        SearchHistory restored(settings);
+        QCOMPARE(restored.entries().size(), 3); // No reimport.
+        QVERIFY(!history.edit("美しい", "AI", "ja", "en").isEmpty());
+        QVERIFY(history.edit("美しい", "beautiful", "ja", "en").isEmpty());
+        QCOMPARE(history.entries()[0].language, QString("en"));
+        settings.setValue("history/entries", QStringList{"bad", "xx:test", "en:", "en:a:b", "en:a:b"});
+        QCOMPARE(history.entries().size(), 1);
+        QCOMPARE(history.entries()[0].word, QString("a:b"));
+        settings.setValue("history/entries", QStringList{});
+        SearchHistory empty(settings);
+        QVERIFY(empty.entries().isEmpty());
+    }
+    void bilingualUi() {
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{});
+        MainWindow window(fixture_);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *history = window.findChild<QListWidget *>("historyList");
+        auto *button = window.findChild<QPushButton *>("alternativeLanguageButton");
+        auto *heading = window.findChild<QLabel *>("resultHeading");
+        input->setText("AI");
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(heading->text().contains("英語で検索"));
+        QVERIFY(button->isVisible());
+        button->click();
+        QVERIFY(heading->text().contains("日本語で検索"));
+        QCOMPARE(history->count(), 2);
+        QCOMPARE(history->item(0)->text(), QString("AI"));
+        QCOMPARE(history->item(1)->text(), QString("AI  [英語]"));
+        QCOMPARE(history->item(0)->data(Qt::UserRole).toString(), QString("ja"));
+        history->setCurrentRow(0);
+        history->setFocus();
+        QTest::keyClick(history, Qt::Key_F2);
+        auto *editor = history->findChild<QLineEdit *>("historyEditor");
+        QVERIFY(editor);
+        QCOMPARE(editor->text(), QString("AI"));
+        editor->setText(" AI ");
+        QTest::keyClick(editor, Qt::Key_Return);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCOMPARE(history->item(0)->data(Qt::UserRole).toString(), QString("ja"));
+        history->setCurrentRow(1);
+        QVERIFY(heading->text().contains("英語で検索"));
+        QCOMPARE(history->count(), 2);
+        history->setCurrentRow(0);
+        QTest::keyClick(history, Qt::Key_F2);
+        editor = history->findChild<QLineEdit *>("historyEditor");
+        QVERIFY(editor);
+        editor->setText("beautiful");
+        QTest::keyClick(editor, Qt::Key_Return);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCOMPARE(history->item(0)->data(Qt::UserRole).toString(), QString("en"));
+        QCOMPARE(history->item(0)->data(Qt::UserRole + 1).toString(), QString("beautiful"));
+        QVERIFY(!button->isVisible());
+        window.close();
+        settings.setValue("history/entries", QStringList{});
+    }
+    void finishingUi() {
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{"ja:編集前"});
+        for (const auto &path : {fixture_, temporary_.filePath("missing.sqlite")}) {
+            MainWindow window(path);
+            window.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&window));
+            window.activateWindow();
+            if (QGuiApplication::platformName() != "offscreen") QVERIFY(QTest::qWaitForWindowActive(&window));
+            auto *history = window.findChild<QListWidget *>("historyList");
+            history->setCurrentRow(0);
+            history->setFocus();
+            QTest::keyClick(history, Qt::Key_F2);
+            auto *editor = history->findChild<QLineEdit *>("historyEditor");
+            QVERIFY(editor);
+            editor->setText(path == fixture_ ? "Us" : "AFGHAN");
+            QTest::keyClick(editor, Qt::Key_Return);
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QCOMPARE(history->item(0)->data(Qt::UserRole).toString(), QString("en"));
+            QCOMPARE(history->item(0)->data(Qt::UserRole + 1).toString(), path == fixture_ ? QString("Us") : QString("AFGHAN"));
+            if (path == fixture_) {
+                auto *choices = window.findChild<QListWidget *>("spellingChoices");
+                QCOMPARE(choices->count(), 2);
+                QTest::mouseClick(choices->viewport(), Qt::LeftButton, Qt::NoModifier,
+                                 choices->visualItemRect(choices->item(0)).center());
+                QCOMPARE(history->item(0)->data(Qt::UserRole + 1).toString(), QString("US"));
+                QVERIFY(!choices->isVisible());
+                auto *input = window.findChild<QLineEdit *>("searchInput");
+                auto *heading = window.findChild<QLabel *>("resultHeading");
+                input->setText("solo"); QTest::keyClick(input, Qt::Key_Return);
+                QVERIFY(heading->text().contains("見出しはありますが"));
+                input->setText("zzzzmissing"); QTest::keyClick(input, Qt::Key_Return);
+                QVERIFY(heading->text().contains("見出しが見つかりませんでした"));
+                input->setText("ＡＩ"); QTest::keyClick(input, Qt::Key_Return);
+                QVERIFY(window.findChild<QPushButton *>("alternativeLanguageButton")->isVisible());
+            }
+            window.close();
+        }
+        settings.setValue("history/entries", QStringList{});
+    }
+    void selfCheck() {
+#ifdef Q_OS_WIN
+        const auto executable = QCoreApplication::applicationDirPath() + "/ruigo.exe";
+        for (const auto &path : {fixture_, temporary_.filePath("missing.sqlite"), temporary_.filePath("old.sqlite")}) {
+            QProcess process;
+            process.start(executable, {"--self-check", "--dictionary", QFileInfo(path).absoluteFilePath()});
+            QVERIFY(process.waitForFinished(15000));
+            QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+            QCOMPARE(process.exitCode(), path == fixture_ ? 0 : 2);
+        }
+#else
+        QSKIP("Windows deployment executable check");
+#endif
     }
     void wordDetails() {
         DictionaryRepository repository;
@@ -164,14 +357,14 @@ private slots:
         QCOMPARE(QApplication::clipboard()->text(), QString("綺麗"));
         input->setText("存在しないテスト語");
         QTest::keyClick(input, Qt::Key_Return);
-        QVERIFY(window.findChild<QLabel *>("resultHeading")->text().contains("類語が見つかりませんでした"));
+        QVERIFY(window.findChild<QLabel *>("resultHeading")->text().contains("見出しが見つかりませんでした"));
         QCOMPARE(history->count(), 2);
         history->setCurrentRow(1);
         QCOMPARE(input->text(), QString("美しい"));
-        QCOMPARE(history->item(0)->text(), QString("存在しないテスト語"));
+        QCOMPARE(history->item(0)->data(Qt::UserRole + 1).toString(), QString("存在しないテスト語"));
         QCOMPARE(history->currentRow(), 1);
         QTest::keyClick(input, Qt::Key_Return);
-        QCOMPARE(history->item(0)->text(), QString("存在しないテスト語"));
+        QCOMPARE(history->item(0)->data(Qt::UserRole + 1).toString(), QString("存在しないテスト語"));
         QCOMPARE(history->count(), 2);
         history->setFocus();
         QTest::keyClick(history, Qt::Key_F2);
@@ -180,20 +373,20 @@ private slots:
         QCOMPARE(editor->selectedText(), QString("美しい"));
         editor->setText("  ");
         QTest::keyClick(editor, Qt::Key_Return);
-        QCOMPARE(history->item(1)->text(), QString("美しい"));
+        QCOMPARE(history->item(1)->data(Qt::UserRole + 1).toString(), QString("美しい"));
         QVERIFY(editor->isVisible());
         QCOMPARE(input->text(), QString("美しい"));
-        editor->setText(history->item(0)->text());
+        editor->setText(history->item(0)->data(Qt::UserRole + 1).toString());
         QTest::keyClick(editor, Qt::Key_Return);
-        QCOMPARE(history->item(1)->text(), QString("美しい"));
+        QCOMPARE(history->item(1)->data(Qt::UserRole + 1).toString(), QString("美しい"));
         QVERIFY(editor->isVisible());
         editor->setText(" 綺麗 ");
         QTest::keyClick(editor, Qt::Key_Return);
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-        QCOMPARE(history->item(1)->text(), QString("綺麗"));
+        QCOMPARE(history->item(1)->data(Qt::UserRole + 1).toString(), QString("綺麗"));
         QCOMPARE(input->text(), QString("綺麗")); // Committing immediately refreshes results.
         QCOMPARE(history->currentRow(), 1);
-        QCOMPARE(history->item(0)->text(), QString("存在しないテスト語"));
+        QCOMPARE(history->item(0)->data(Qt::UserRole + 1).toString(), QString("存在しないテスト語"));
         QCOMPARE(tree->topLevelItemCount(), 1);
         QCOMPARE(tree->topLevelItem(0)->childCount(), 1);
         QCOMPARE(tree->topLevelItem(0)->child(0)->text(0), QString("美しい"));
@@ -203,7 +396,7 @@ private slots:
         editor->setText("キャンセルされる語");
         QTest::keyClick(editor, Qt::Key_Escape);
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-        QCOMPARE(history->item(1)->text(), QString("綺麗"));
+        QCOMPARE(history->item(1)->data(Qt::UserRole + 1).toString(), QString("綺麗"));
         QCOMPARE(input->text(), QString("綺麗"));
         QTest::mouseClick(history->viewport(), Qt::LeftButton, Qt::NoModifier,
             history->visualItemRect(history->item(1)).center());
@@ -217,7 +410,7 @@ private slots:
         input->setFocus();
         QApplication::processEvents();
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-        QCOMPARE(history->item(1)->text(), QString("綺麗"));
+        QCOMPARE(history->item(1)->data(Qt::UserRole + 1).toString(), QString("綺麗"));
         QVERIFY(!history->findChild<QLineEdit *>("historyEditor"));
         history->setFocus();
         QTest::keyClick(history, Qt::Key_Delete);
@@ -227,7 +420,7 @@ private slots:
         const auto state = window.findChild<QSplitter *>("splitter")->saveState();
         window.close();
         MainWindow restored(fixture_);
-        QCOMPARE(restored.findChild<QListWidget *>("historyList")->item(0)->text(), QString("存在しないテスト語"));
+        QCOMPARE(restored.findChild<QListWidget *>("historyList")->item(0)->data(Qt::UserRole + 1).toString(), QString("存在しないテスト語"));
         QCOMPARE(restored.findChild<QListWidget *>("historyList")->count(), 1);
         QCOMPARE(restored.findChild<QSplitter *>("splitter")->saveState(), state);
         MainWindow missing(temporary_.filePath("missing.sqlite"));
@@ -360,7 +553,19 @@ private slots:
         }
         std::sort(durations.begin(), durations.end());
         qInfo("Real dictionary search median: %.3f ms", durations[50] / 1000000.0);
-        QVERIFY(repository.search("beautiful", "en").groups.isEmpty());
+        for (const auto &word : {"beautiful", "bank", "happy"}) {
+            QElapsedTimer timer; timer.start();
+            const auto english = repository.search(word);
+            qInfo("English %s: %.3f ms, %d candidates", word, timer.nsecsElapsed() / 1000000.0, english.candidateCount());
+            QVERIFY(english.error.isEmpty());
+            QCOMPARE(english.language, QString("en"));
+            QVERIFY(english.found);
+            if (QString(word) != "beautiful") QVERIFY(english.candidateCount() > 0);
+            for (const auto &group : english.groups) {
+                QVERIFY(group.id.startsWith("oewn:2025:"));
+                QVERIFY(!group.definition.isEmpty());
+            }
+        }
         const auto shurei = repository.wordDetails("秀麗", "ja", "wnja:2.1:wnja-00217728-a");
         QCOMPARE(shurei.readings, QStringList{"しゅうれい"});
         QVERIFY(shurei.otherMeanings.isEmpty());
@@ -420,6 +625,17 @@ private slots:
             checkTooltip("美しい", "端麗", "tooltip-tanrei.png", false);
             checkTooltip("美しい", "ビューティフル", "tooltip-kana.png", false);
             checkTooltip("あいつ", "", "tooltip-missing.png", true);
+            checkTooltip("happy", "felicitous", "tooltip-english.png", false);
+            QVERIFY(!QToolTip::text().contains("読み："));
+            QVERIFY(window.grab().save("preview-english.png"));
+        }
+        for (const auto &word : {"AFGHAN", "beautiful", "存在しないzzzz", "ＡＩ"}) {
+            input->setText(QString::fromUtf8(word));
+            QTest::keyClick(input, Qt::Key_Return);
+            QApplication::processEvents();
+            const auto name = QString::fromUtf8(word) == "ＡＩ" ? QString("fullwidth") :
+                QString::fromUtf8(word).startsWith("存在") ? QString("missing") : QString::fromUtf8(word);
+            QVERIFY(window.grab().save("preview-" + name + ".png"));
         }
         window.close();
     }

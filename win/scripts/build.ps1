@@ -1,4 +1,4 @@
-param([switch]$Run, [switch]$Deploy, [switch]$Rebuild)
+﻿param([switch]$Run, [switch]$Deploy, [switch]$Rebuild)
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 function Find-Qmake([string]$Bin) {
@@ -97,6 +97,16 @@ function Test-DeployedApplication {
     $startInfo.EnvironmentVariables['PATH'] = "$env:SystemRoot\System32;$env:SystemRoot"
     $startInfo.EnvironmentVariables.Remove('QT_PLUGIN_PATH')
     $startInfo.EnvironmentVariables.Remove('QT_QPA_PLATFORM_PLUGIN_PATH')
+    $startInfo.Arguments = '--self-check'
+    $check = [Diagnostics.Process]::Start($startInfo)
+    try {
+        if (!$check.WaitForExit(15000)) { throw 'Deployed dictionary self-check timed out.' }
+        if ($check.ExitCode -ne 0) { throw "Deployed dictionary self-check failed ($($check.ExitCode)). Check DB, DLLs and plugins." }
+    } finally {
+        if (!$check.HasExited) { $check.Kill(); $check.WaitForExit() }
+        $check.Dispose()
+    }
+    $startInfo.Arguments = ''
     $process = [Diagnostics.Process]::Start($startInfo)
     try {
         if ($process.WaitForExit(5000)) {
@@ -116,25 +126,32 @@ function Test-DeployedApplication {
 Assert-FileWritable "$buildDir/ruigo.exe"
 if ($Deploy) {
     Assert-FileWritable "$outputDir/ruigo.exe"
+    $python = "$projectRoot/.venv/Scripts/python.exe"
+    if (!(Test-Path -LiteralPath $python)) {
+        $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
+        if ($launcher) { Invoke-Checked $launcher.Source @('-3', '-m', 'venv', "$projectRoot/.venv") }
+        else {
+            $launcher = Get-Command python.exe -ErrorAction SilentlyContinue
+            if (!$launcher) { throw 'Install Python 3.10 or newer to generate the dictionary DB.' }
+            Invoke-Checked $launcher.Source @('-m', 'venv', "$projectRoot/.venv")
+        }
+    }
+    Invoke-Checked $python @('-c', 'import sys; assert sys.version_info >= (3, 10)')
+    & $python -c 'import wn'
+    if ($LASTEXITCODE -ne 0) {
+        Invoke-Checked $python @('-m', 'pip', 'install', '-r', "$projectRoot/tools/requirements.txt")
+    }
     if (!(Test-Path -LiteralPath "$projectRoot/data/dictionary.sqlite")) {
         if (!(Test-Path -LiteralPath "$projectRoot/wnja-2.1/wnja/wnja-2.1.xml")) {
             throw 'Japanese WordNet source missing: wnja-2.1/wnja/wnja-2.1.xml. See README.md.'
         }
-        $python = "$projectRoot/.venv/Scripts/python.exe"
-        if (!(Test-Path -LiteralPath $python)) {
-            $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
-            if ($launcher) { Invoke-Checked $launcher.Source @('-3', '-m', 'venv', "$projectRoot/.venv") }
-            else {
-                $launcher = Get-Command python.exe -ErrorAction SilentlyContinue
-                if (!$launcher) { throw 'Install Python 3.10 or newer to generate the dictionary DB.' }
-                Invoke-Checked $launcher.Source @('-m', 'venv', "$projectRoot/.venv")
-            }
-        }
-        Invoke-Checked $python @('-c', 'import sys; assert sys.version_info >= (3, 10)')
         Write-Host 'Generating dictionary DB (first setup requires network access)...'
         Invoke-Checked $python @('-m', 'pip', 'install', '-r', "$projectRoot/tools/requirements.txt")
         Invoke-Checked $python @("$projectRoot/tools/build_dictionary.py", '--download-dependencies')
-        Invoke-Checked $python @("$projectRoot/tools/build_dictionary.py", '--verify-only')
+    }
+    & $python "$projectRoot/tools/build_dictionary.py" --verify-only
+    if ($LASTEXITCODE -ne 0) {
+        throw '辞書DBが古いか不正なので再生成が必要です。README.md の「辞書の生成」を参照してください。既存DBは置き換えていません。'
     }
 }
 if ($Rebuild) { Remove-GeneratedDirectory $buildDir }

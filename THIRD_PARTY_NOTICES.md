@@ -30,7 +30,26 @@ Dictionary readings are retained but are not searched. Examples and semantic
 relations are not included in the application database. No definitions are generated.
 
 Build-time dependency: OMW English WordNet `omw-en:2.0`, downloaded through `wn`.
-English entries are not exported into this Japanese release.
+This dependency is not exported; English search uses OEWN below.
+
+## Open English Wordnet 2025 (standard edition)
+
+Open English Wordnet contributors, https://en-word.net/
+Source: https://en-word.net/static/english-wordnet-2025.xml.gz
+Project: https://github.com/globalwordnet/english-wordnet
+
+Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0).
+Derived from Princeton WordNet, WordNet 3.1 Copyright 2011 by Princeton University.
+The upstream notice and full CC BY 4.0 text are in `licenses/oewn-CC-BY-4.0.txt`.
+The upstream Princeton license/disclaimer is included verbatim in
+`licenses/WNDB_License.txt` (including its historical OEWN 2023 header).
+License sources: the project repository files `LICENSE.md` and `WNDB_License.txt`.
+
+The WN-LMF data is converted to application-specific SQLite: original entry
+IDs, parts of speech, synsets and English definitions are retained; search
+keys and source namespaces are added. Examples, relations and pronunciations
+are not exposed. No definitions or translations are generated.
+This conversion is not endorsed by the dictionary authors.
 
 ## Qt 6
 

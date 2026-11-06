@@ -30,11 +30,14 @@
 #include <QVBoxLayout>
 
 namespace {
+QString historyLabel(const QString &word, const QString &language) {
+    return language == "en" ? word + QStringLiteral("  [英語]") : word;
+}
 class HistoryEditorDelegate : public QStyledItemDelegate {
 public:
-    using Save = std::function<QString(const QString &, const QString &)>;
-    HistoryEditorDelegate(QListWidget *list, Save save, std::function<void(const QString &)> committed)
-        : QStyledItemDelegate(list), list_(list), save_(std::move(save)), committed_(std::move(committed)) {}
+    using Save = std::function<QString(int, const QString &)>;
+    HistoryEditorDelegate(QListWidget *list, Save save, std::function<QString(int)> language, std::function<void(const QString &)> committed)
+        : QStyledItemDelegate(list), list_(list), save_(std::move(save)), language_(std::move(language)), committed_(std::move(committed)) {}
     QWidget *createEditor(QWidget *parent, const QStyleOptionViewItem &, const QModelIndex &) const override {
         auto *editor = new QLineEdit(parent);
         editor->setObjectName("historyEditor");
@@ -43,13 +46,18 @@ public:
     }
     void setEditorData(QWidget *widget, const QModelIndex &index) const override {
         auto *editor = static_cast<QLineEdit *>(widget);
-        editor->setText(index.data(Qt::EditRole).toString());
+        editor->setText(index.data(Qt::UserRole + 1).toString());
+        editor->setProperty("row", index.row());
         editor->setProperty("originalWord", editor->text());
         editor->selectAll();
     }
     void setModelData(QWidget *widget, QAbstractItemModel *model, const QModelIndex &index) const override {
         QSignalBlocker blocker(list_); // Search once, explicitly, after committing and closing.
-        model->setData(index, static_cast<QLineEdit *>(widget)->text().trimmed(), Qt::EditRole);
+        const auto word = static_cast<QLineEdit *>(widget)->text().trimmed();
+        const auto language = language_(index.row());
+        model->setData(index, language, Qt::UserRole);
+        model->setData(index, word, Qt::UserRole + 1);
+        model->setData(index, historyLabel(word, language), Qt::EditRole);
     }
     bool eventFilter(QObject *object, QEvent *event) override {
         auto *editor = qobject_cast<QLineEdit *>(object);
@@ -57,7 +65,7 @@ public:
         if (event->type() == QEvent::KeyPress) {
             const auto key = static_cast<QKeyEvent *>(event)->key();
             if (key == Qt::Key_Return || key == Qt::Key_Enter) {
-                const auto error = save_(editor->property("originalWord").toString(), editor->text());
+                const auto error = save_(editor->property("row").toInt(), editor->text());
                 if (!error.isEmpty()) {
                     editor->setToolTip(error);
                     QToolTip::showText(editor->mapToGlobal(QPoint(0, editor->height())), error, editor);
@@ -91,6 +99,7 @@ public:
 private:
     QListWidget *list_;
     Save save_;
+    std::function<QString(int)> language_;
     std::function<void(const QString &)> committed_;
 };
 
@@ -123,11 +132,24 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     historyList_ = new QListWidget;
     historyList_->setObjectName("historyList");
     historyList_->setToolTip(QStringLiteral("ダブルクリック・F2で編集 ／ Enterで確定 ／ Escで取消 ／ Deleteで削除"));
-    historyList_->setItemDelegate(new HistoryEditorDelegate(historyList_, [this](const QString &original, const QString &replacement) {
-        const auto error = history_.edit(original, replacement, language_);
+    historyList_->setItemDelegate(new HistoryEditorDelegate(historyList_, [this](int row, const QString &replacement) {
+        auto *item = historyList_->item(row);
+        if (!item) return QStringLiteral("編集する入力履歴が見つかりません。");
+        const auto original = item->data(Qt::UserRole + 1).toString();
+        const auto language = item->data(Qt::UserRole).toString();
+        const auto word = replacement.trimmed();
+        auto newLanguage = language;
+        if (!word.isEmpty() && word != original) {
+            newLanguage = repository_.resolveLanguage(word);
+        }
+        const auto error = history_.edit(original, word, language, newLanguage);
         if (!error.isEmpty()) statusBar()->showMessage(error, 4000);
+
         return error;
-    }, [this](const QString &word) { search(word); }));
+    }, [this](int row) { return history_.entries().at(row).language; }, [this](const QString &word) {
+        const auto *item = historyList_->currentItem();
+        if (item) search(word, item->data(Qt::UserRole).toString());
+    }));
     historyList_->setEditTriggers(QAbstractItemView::DoubleClicked);
     historyList_->setContextMenuPolicy(Qt::CustomContextMenu);
     auto *editAction = new QAction(QStringLiteral("編集"), historyList_);
@@ -161,6 +183,25 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     heading_->setWordWrap(true);
     rightLayout->addWidget(heading_);
     heading_->hide();
+    alternativeButton_ = new QPushButton;
+    alternativeButton_->setObjectName("alternativeLanguageButton");
+    alternativeButton_->hide();
+    rightLayout->addWidget(alternativeButton_);
+    connect(alternativeButton_, &QPushButton::clicked, this, [this] {
+        search(alternativeButton_->property("word").toString(), alternativeLanguage_, true);
+    });
+    spellingChoices_ = new QListWidget;
+    spellingChoices_->setObjectName("spellingChoices");
+    spellingChoices_->setMaximumHeight(120);
+    spellingChoices_->hide();
+    rightLayout->addWidget(spellingChoices_);
+    const auto chooseSpelling = [this](QListWidgetItem *item) {
+        const auto word = item->text();
+        const auto language = item->data(Qt::UserRole).toString();
+        search(word, language, true);
+    };
+    connect(spellingChoices_, &QListWidget::itemClicked, this, chooseSpelling);
+    connect(spellingChoices_, &QListWidget::itemActivated, this, chooseSpelling);
     results_ = new QTreeWidget;
     results_->setObjectName("results");
     results_->viewport()->installEventFilter(this);
@@ -174,19 +215,14 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     statusBar()->addWidget(hint, 1);
     setCentralWidget(splitter_);
     splitter_->setSizes({300, 700});
-    connect(input_, &QLineEdit::returnPressed, this, [this] {
-        const auto word = input_->text().trimmed();
-        if (word.isEmpty()) return;
-        const auto before = history_.words(language_);
-        history_.add(word, language_);
-        if (history_.words(language_) != before) refreshHistory();
-        search(word);
-    });
-    connect(historyList_, &QListWidget::currentTextChanged, this, [this](const QString &word) { search(word); });
-    connect(historyList_, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
-        if (input_->text() != item->text()) search(item->text());
-    });
-    connect(historyList_, &QListWidget::itemActivated, this, [this](QListWidgetItem *item) { search(item->text()); });
+    connect(input_, &QLineEdit::returnPressed, this, [this] { search(input_->text(), {}, true); });
+    const auto searchHistoryItem = [this](QListWidgetItem *item) {
+        if (item) search(item->data(Qt::UserRole + 1).toString(), item->data(Qt::UserRole).toString());
+    };
+    connect(historyList_, &QListWidget::currentItemChanged, this,
+        [searchHistoryItem](QListWidgetItem *current, QListWidgetItem *) { searchHistoryItem(current); });
+    connect(historyList_, &QListWidget::itemClicked, this, searchHistoryItem);
+    connect(historyList_, &QListWidget::itemActivated, this, searchHistoryItem);
     connect(results_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *item) { copyWord(item); });
     connect(results_, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &point) {
         auto *item = results_->itemAt(point);
@@ -197,7 +233,7 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         auto *find = menu.addAction(QStringLiteral("この単語で検索"));
         auto *selected = menu.exec(results_->viewport()->mapToGlobal(point));
         if (selected == copy) copyWord(item);
-        else if (selected == find) search(word);
+        else if (selected == find) search(word, language_);
     });
     refreshHistory();
     restoreGeometry(settings_.value("window/geometry").toByteArray());
@@ -318,8 +354,16 @@ void MainWindow::showDisplaySettings() {
 }
 void MainWindow::refreshHistory() {
     QSignalBlocker blocker(historyList_);
+    const auto *selected = historyList_->currentItem();
+    const auto selectedWord = selected ? selected->data(Qt::UserRole + 1).toString() : QString();
+    const auto selectedLanguage = selected ? selected->data(Qt::UserRole).toString() : QString();
     historyList_->clear();
-    historyList_->addItems(history_.words(language_));
+    for (const auto &entry : history_.entries()) {
+        auto *item = new QListWidgetItem(historyLabel(entry.word, entry.language), historyList_);
+        item->setData(Qt::UserRole, entry.language);
+        item->setData(Qt::UserRole + 1, entry.word);
+        if (entry.word == selectedWord && entry.language == selectedLanguage) historyList_->setCurrentItem(item);
+    }
     for (int i = 0; i < historyList_->count(); ++i)
         historyList_->item(i)->setFlags(historyList_->item(i)->flags() | Qt::ItemIsEditable);
 }
@@ -331,23 +375,46 @@ void MainWindow::editHistory() {
 void MainWindow::deleteHistory() {
     auto *item = historyList_->currentItem();
     if (!item) return;
-    history_.remove(item->text(), language_);
+    history_.remove(item->data(Qt::UserRole + 1).toString(), item->data(Qt::UserRole).toString());
     QSignalBlocker blocker(historyList_);
     delete historyList_->takeItem(historyList_->row(item));
     historyList_->setCurrentRow(-1);
 }
-void MainWindow::search(const QString &input) {
+void MainWindow::search(const QString &input, const QString &requestedLanguage, bool record) {
     const auto word = input.trimmed();
     if (word.isEmpty()) return;
     input_->setText(word);
+    QToolTip::hideText();
+    alternativeButton_->hide();
+    spellingChoices_->hide();
+    spellingChoices_->clear();
     results_->clear();
     heading_->show();
-    const auto result = repository_.search(word, language_);
+    const auto result = repository_.search(word, requestedLanguage);
+    language_ = result.language;
+    alternativeLanguage_ = result.alternativeLanguage;
+    if (record) { history_.add(word, language_); refreshHistory(); }
     if (!result.error.isEmpty()) { heading_->setText(result.error); return; }
-    heading_->setText(QStringLiteral("「%1」の類語候補：%2件（%3意味）")
-        .arg(word).arg(result.candidateCount()).arg(result.groups.size()));
+    if (!alternativeLanguage_.isEmpty()) {
+        alternativeButton_->setProperty("word", word);
+        const auto name = DictionaryRepository::languageName(alternativeLanguage_);
+        alternativeButton_->setText(QStringLiteral("%1にも見出しがあります → %1で検索").arg(name));
+        alternativeButton_->show();
+    }
+    heading_->setText(QStringLiteral("%4で検索 — 「%1」の類語候補：%2件（%3意味）")
+        .arg(word).arg(result.candidateCount()).arg(result.groups.size()).arg(DictionaryRepository::languageName(language_)));
+    if (!result.spellings.isEmpty()) {
+        heading_->setText(QStringLiteral("%1 に一致しました。綴りを選んでください。").arg(result.spellings.join(" / ")));
+        for (const auto &spelling : result.spellings) {
+            auto *item = new QListWidgetItem(spelling, spellingChoices_);
+            item->setData(Qt::UserRole, language_);
+        }
+        spellingChoices_->show();
+        return;
+    }
     if (result.groups.isEmpty()) {
-        heading_->setText(heading_->text() + QStringLiteral("\n類語が見つかりませんでした"));
+        heading_->setText(heading_->text() + (result.found ? QStringLiteral("\n見出しはありますが、同じ意味の類語は収録されていません")
+            : QStringLiteral("\n見出しが見つかりませんでした")));
         return;
     }
     for (const auto &group : result.groups) {
@@ -379,22 +446,8 @@ bool MainWindow::eventFilter(QObject *object, QEvent *event) {
     const auto definition = [&](const QString &text) {
         return escape(text.trimmed().isEmpty() ? QStringLiteral("説明なし") : text);
     };
-    // Compare only kana spellings; do not infer any missing pronunciation.
-    const auto kana = [](QString text) {
-        text = text.normalized(QString::NormalizationForm_KC);
-        for (auto &ch : text)
-            if (ch.unicode() >= 0x30a1 && ch.unicode() <= 0x30f6)
-                ch = QChar(ch.unicode() - 0x60);
-        return text;
-    };
-    bool redundantReading = !details.readings.isEmpty();
-    for (const auto &ch : kana(word))
-        if (!(ch.unicode() >= 0x3041 && ch.unicode() <= 0x3096) && ch != QChar(0x30fc))
-            redundantReading = false;
-    for (const auto &reading : details.readings)
-        if (kana(reading) != kana(word)) redundantReading = false;
     QString tooltip = QStringLiteral("<qt><table width='380'><tr><td><b>%1</b>").arg(escape(word));
-    if (!redundantReading)
+    if (details.showReadings)
         tooltip += QStringLiteral("<br>読み：%1").arg(details.readings.isEmpty()
             ? QStringLiteral("未収録") : escape(details.readings.join(QStringLiteral("／"))));
     tooltip += QStringLiteral("<p><b>現在の意味</b><br>%1</p><p><b>ほかに収録されている意味</b><br>")
