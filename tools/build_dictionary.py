@@ -15,7 +15,7 @@ from wn import lmf
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = """
 PRAGMA foreign_keys=ON;
-PRAGMA user_version=3;
+PRAGMA user_version=4;
 CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE sources(id TEXT PRIMARY KEY,version TEXT NOT NULL,language TEXT NOT NULL,url TEXT,license TEXT,reading_mode TEXT NOT NULL);
 CREATE TABLE synsets(id TEXT PRIMARY KEY,source TEXT NOT NULL REFERENCES sources(id),original_id TEXT NOT NULL,pos TEXT,ili TEXT);
@@ -28,13 +28,15 @@ CREATE TABLE synset_definitions(synset_id TEXT NOT NULL REFERENCES synsets(id),l
 CREATE TABLE senses(source TEXT NOT NULL REFERENCES sources(id),original_id TEXT NOT NULL,synset_id TEXT NOT NULL REFERENCES synsets(id),lemma_id INTEGER NOT NULL REFERENCES lemmas(id),PRIMARY KEY(source,original_id));
 CREATE INDEX idx_senses_lemma ON senses(lemma_id);
 CREATE INDEX idx_senses_synset ON senses(synset_id);
+CREATE TABLE synset_relations(synset_id TEXT NOT NULL REFERENCES synsets(id),target_id TEXT NOT NULL REFERENCES synsets(id),rel_type TEXT NOT NULL,PRIMARY KEY(synset_id,rel_type,target_id));
 """
 
 
 EXPECTED = {
-    "wnja:2.1": {"lemmas": 90706, "synsets": 67509, "senses": 148703, "synset_definitions": 67064},
-    "oewn:2025": {"lemmas": 135969, "synsets": 107519, "senses": 185129, "synset_definitions": 107519},
+    "wnja:2.1": {"lemmas": 90706, "synsets": 67509, "senses": 148703, "synset_definitions": 67064, "similar": 17271},
+    "oewn:2025": {"lemmas": 135969, "synsets": 107519, "senses": 185129, "synset_definitions": 107519, "similar": 23176},
 }
+RELATION_TYPES = {"similar"}
 ENGLISH_URL = "https://en-word.net/static/english-wordnet-2025.xml.gz"
 
 
@@ -62,7 +64,7 @@ def search_key(word, language):
 
 def validate(path):
     with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
-        if db.execute("PRAGMA user_version").fetchone()[0] != 3:
+        if db.execute("PRAGMA user_version").fetchone()[0] != 4:
             raise ValueError("Dictionary schema is old; regenerate the bilingual DB")
         if db.execute("PRAGMA integrity_check").fetchone() != ("ok",):
             raise ValueError("SQLite integrity check failed")
@@ -76,6 +78,8 @@ def validate(path):
                       for table in ("lemmas", "synsets", "senses")}
             counts["synset_definitions"] = db.execute(
                 "SELECT count(*) FROM synset_definitions d JOIN synsets s ON s.id=d.synset_id WHERE s.source=?", (source,)).fetchone()[0]
+            counts["similar"] = db.execute(
+                "SELECT count(*) FROM synset_relations r JOIN synsets s ON s.id=r.synset_id WHERE r.rel_type='similar' AND s.source=?", (source,)).fetchone()[0]
             if counts != expected:
                 raise ValueError(f"Unexpected counts for {source}: {counts}")
             result[source] = counts
@@ -83,6 +87,8 @@ def validate(path):
             raise ValueError("Lemma language mismatch")
         if db.execute("SELECT count(*) FROM synset_definitions d JOIN synsets s ON s.id=d.synset_id JOIN sources src ON src.id=s.source WHERE d.language<>src.language").fetchone()[0]:
             raise ValueError("Definition language mismatch")
+        if db.execute("SELECT count(*) FROM synset_relations r JOIN synsets a ON a.id=r.synset_id JOIN synsets b ON b.id=r.target_id WHERE a.source<>b.source").fetchone()[0]:
+            raise ValueError("Synset relations must stay within one dictionary")
         actual_aliases = set(db.execute("SELECT lemma_id,language,word FROM lemma_aliases"))
         expected_aliases = set()
         for number, language, word, raw in db.execute("SELECT id,language,word,forms_json FROM lemmas"):
@@ -118,7 +124,12 @@ def import_lexicon(db, source, expected_id, language, reading_mode):
     db.executemany("INSERT INTO metadata VALUES (?,?)", [
         (source_id + ":source_sha256", hashlib.sha256(source.read_bytes()).hexdigest()),
         (source_id + ":lmf_version", resource["lmf_version"])])
+    relations = []
     for synset in lexicon["synsets"]:
+        # Only "similar" (e.g. adjective head/satellite) is shown, as related
+        # words kept apart from same-meaning synonyms. Other relations stay out.
+        relations.extend((sid(synset["id"]), sid(r["target"]), r["relType"])
+                         for r in synset.get("relations", []) if r["relType"] in RELATION_TYPES)
         db.execute("INSERT INTO synsets VALUES (?,?,?,?,?)", (sid(synset["id"]), source_id, synset["id"], synset.get("partOfSpeech"), synset.get("ili")))
         texts = [d["text"].strip() for d in synset.get("definitions", [])
                  if d.get("language", language) == language and d["text"].strip()]
@@ -133,6 +144,7 @@ def import_lexicon(db, source, expected_id, language, reading_mode):
                        [(number, language, alias) for alias in spelling_aliases(entry, language)])
         for sense in entry.get("senses", []):
             db.execute("INSERT INTO senses VALUES (?,?,?,?)", (source_id, sense["id"], sid(sense["synset"]), number))
+    db.executemany("INSERT INTO synset_relations VALUES (?,?,?)", relations)
 
 
 def build(source, english_source, output):

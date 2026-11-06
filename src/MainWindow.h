@@ -8,6 +8,7 @@ class QTreeWidget;
 class QTreeWidgetItem;
 class QLabel;
 class QPushButton;
+class QCheckBox;
 class QSplitter;
 class MainWindow : public QMainWindow {
 public:
@@ -17,6 +18,7 @@ protected:
     bool eventFilter(QObject *object, QEvent *event) override;
 private:
     void search(const QString &word, const QString &language = {}, bool record = false);
+    void showResult();
     void refreshHistory();
     void editHistory();
     void deleteHistory();
@@ -29,7 +31,10 @@ private:
     DictionaryRepository repository_;
     QString language_ = QStringLiteral("ja");
     QString alternativeLanguage_;
+    SearchResult lastResult_;
+    QString lastWord_;
     QPushButton *alternativeButton_;
+    QCheckBox *showRelatedCheck_;
     QLineEdit *input_;
     QListWidget *historyList_;
     QListWidget *spellingChoices_;

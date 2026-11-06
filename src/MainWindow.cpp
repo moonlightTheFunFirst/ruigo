@@ -20,6 +20,8 @@
 #include <QFormLayout>
 #include <QSpinBox>
 #include <QPushButton>
+#include <QCheckBox>
+#include <QHBoxLayout>
 #include <QMenuBar>
 #include <QLabel>
 #include <QLineEdit>
@@ -189,8 +191,22 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     heading_->setObjectName("resultHeading");
     heading_->setTextFormat(Qt::PlainText);
     heading_->setWordWrap(true);
-    rightLayout->addWidget(heading_);
+    // The heading and the related-words switch share one row; the switch stays
+    // visible before the first search so the preference can be set any time.
+    auto *headingRow = new QHBoxLayout;
+    headingRow->addWidget(heading_, 1);
+    showRelatedCheck_ = new QCheckBox(QStringLiteral("似た意味も表示"));
+    showRelatedCheck_->setObjectName("showRelatedCheck");
+    showRelatedCheck_->setToolTip(QStringLiteral("辞書で「似た意味」とされる関連語を、類語の後に別枠で表示します"));
+    showRelatedCheck_->setChecked(settings_.value("display/showRelated", true).toBool());
+    headingRow->addWidget(showRelatedCheck_, 0, Qt::AlignTop);
+    rightLayout->addLayout(headingRow);
     heading_->hide();
+    connect(showRelatedCheck_, &QCheckBox::toggled, this, [this](bool checked) {
+        settings_.setValue("display/showRelated", checked);
+        settings_.sync();
+        showResult(); // Redraw from the last result: no new query, no history change.
+    });
     alternativeButton_ = new QPushButton;
     alternativeButton_->setObjectName("alternativeLanguageButton");
     alternativeButton_->hide();
@@ -222,8 +238,15 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     results_->setHeaderHidden(true);
     results_->setWordWrap(true);
     results_->setContextMenuPolicy(Qt::CustomContextMenu);
+    results_->installEventFilter(this); // Enter copies, Up from the first word returns to the search box.
+    input_->installEventFilter(this);   // Down moves to the first candidate.
+    auto *copyAction = new QAction(QStringLiteral("コピー"), results_);
+    copyAction->setShortcut(QKeySequence::Copy);
+    copyAction->setShortcutContext(Qt::WidgetShortcut);
+    results_->addAction(copyAction);
+    connect(copyAction, &QAction::triggered, this, [this] { copyWord(results_->currentItem()); });
     rightLayout->addWidget(results_);
-    auto *hint = new QLabel(QStringLiteral("類語候補をダブルクリックでコピー ／ 右クリックで操作"));
+    auto *hint = new QLabel(QStringLiteral("類語候補をダブルクリック・Enter・Ctrl+Cでコピー ／ 検索欄で↓で候補へ移動 ／ 右クリックで操作"));
     hint->setObjectName("resultHint");
     hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     statusBar()->addWidget(hint, 1);
@@ -244,6 +267,7 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         const auto word = item->data(0, Qt::UserRole).toString();
         QMenu menu;
         auto *copy = menu.addAction(QStringLiteral("コピー"));
+        copy->setShortcut(QKeySequence::Copy); // Shown as a hint; the tree's own action handles the key.
         auto *find = menu.addAction(QStringLiteral("この単語で検索"));
         auto *selected = menu.exec(results_->viewport()->mapToGlobal(point));
         if (selected == copy) copyWord(item);
@@ -403,25 +427,48 @@ void MainWindow::search(const QString &input, const QString &requestedLanguage, 
     const auto word = input.trimmed();
     if (word.isEmpty()) return;
     input_->setText(word);
+    lastResult_ = repository_.search(word, requestedLanguage);
+    lastWord_ = word;
+    language_ = lastResult_.language;
+    alternativeLanguage_ = lastResult_.alternativeLanguage;
+    if (record) { history_.add(word, language_); refreshHistory(); }
+    showResult();
+}
+void MainWindow::showResult() {
+    const auto &result = lastResult_;
+    const auto &word = lastWord_;
     QToolTip::hideText();
     alternativeButton_->hide();
     spellingChoices_->hide();
     spellingChoices_->clear();
     results_->clear();
+    if (word.isEmpty()) return;
     heading_->show();
-    const auto result = repository_.search(word, requestedLanguage);
-    language_ = result.language;
-    alternativeLanguage_ = result.alternativeLanguage;
-    if (record) { history_.add(word, language_); refreshHistory(); }
     if (!result.error.isEmpty()) { heading_->setText(result.error); return; }
+    // Related ("similar") meanings can be long lists, so the viewer can hide them.
+    const bool showRelated = showRelatedCheck_->isChecked() && !result.relatedGroups.isEmpty();
+    const bool relatedHidden = !showRelatedCheck_->isChecked() && !result.relatedGroups.isEmpty();
     if (!alternativeLanguage_.isEmpty()) {
         alternativeButton_->setProperty("word", word);
         const auto name = DictionaryRepository::languageName(alternativeLanguage_);
         alternativeButton_->setText(QStringLiteral("%1にも見出しがあります → %1で検索").arg(name));
         alternativeButton_->show();
     }
-    heading_->setText(QStringLiteral("%4で検索 — 「%1」の類語候補：%2件（%3意味）")
-        .arg(word).arg(result.candidateCount()).arg(result.groups.size()).arg(DictionaryRepository::languageName(language_)));
+    // Say which headword was searched when it is not literally the input.
+    QString target = QStringLiteral("「%1」").arg(word);
+    if (!result.matchedWords.isEmpty()) {
+        const auto headwords = QStringLiteral("「%1」").arg(result.matchedWords.join(QStringLiteral("」「")));
+        target += result.viaAlias ? QStringLiteral("（%1の別表記）").arg(headwords)
+                                  : QStringLiteral("（%1として検索）").arg(headwords);
+    }
+    QString heading = QStringLiteral("%1で検索 — %2の類語候補：%3件（%4意味）")
+        .arg(DictionaryRepository::languageName(language_), target)
+        .arg(result.candidateCount()).arg(result.groups.size());
+    if (showRelated)
+        heading += QStringLiteral("、関連語：%1件").arg(result.relatedCount());
+    else if (relatedHidden)
+        heading += QStringLiteral("（似た意味の関連語%1件は非表示）").arg(result.relatedCount());
+    heading_->setText(heading);
     if (!result.spellings.isEmpty()) {
         heading_->setText(QStringLiteral("%1 に一致しました。綴りを選んでください。").arg(result.spellings.join(" / ")));
         for (const auto &spelling : result.spellings) {
@@ -431,26 +478,65 @@ void MainWindow::search(const QString &input, const QString &requestedLanguage, 
         spellingChoices_->show();
         return;
     }
-    if (result.groups.isEmpty()) {
-        heading_->setText(heading_->text() + (result.found ? QStringLiteral("\n見出しはありますが、同じ意味の類語は収録されていません")
-            : QStringLiteral("\n見出しが見つかりませんでした")));
+    if (!result.found) {
+        heading_->setText(heading_->text() + QStringLiteral("\n見出しが見つかりませんでした"));
         return;
     }
-    for (const auto &group : result.groups) {
-        auto *parent = new QTreeWidgetItem(results_, {QStringLiteral("意味：") +
-            (group.definition.isEmpty() ? QStringLiteral("説明なし") : group.definition)});
-        parent->setToolTip(0, parent->text(0));
-        parent->setForeground(0, QColor(palette().color(QPalette::Base).lightness() < 128 ? "#b4b4b4" : "#555555"));
-        for (const auto &candidate : group.words) {
-            auto *item = new QTreeWidgetItem(parent, {candidate});
-            item->setData(0, Qt::UserRole, candidate);
-            item->setData(0, Qt::UserRole + 1, group.id);
-            item->setData(0, Qt::UserRole + 2, group.definition);
+    if (result.groups.isEmpty())
+        heading_->setText(heading_->text() + (showRelated
+            ? QStringLiteral("\n同じ意味の類語は収録されていないため、似た意味の関連語を表示します")
+            : QStringLiteral("\n見出しはありますが、同じ意味の類語は収録されていません")));
+    const auto addGroups = [this](const QVector<MeaningGroup> &groups, const QString &prefix) {
+        for (const auto &group : groups) {
+            auto *parent = new QTreeWidgetItem(results_, {prefix +
+                (group.definition.isEmpty() ? QStringLiteral("説明なし") : group.definition)});
+            parent->setToolTip(0, parent->text(0));
+            parent->setForeground(0, QColor(palette().color(QPalette::Base).lightness() < 128 ? "#b4b4b4" : "#555555"));
+            for (const auto &candidate : group.words) {
+                auto *item = new QTreeWidgetItem(parent, {candidate});
+                item->setData(0, Qt::UserRole, candidate);
+                item->setData(0, Qt::UserRole + 1, group.id);
+                item->setData(0, Qt::UserRole + 2, group.definition);
+            }
+            parent->setExpanded(true);
         }
-        parent->setExpanded(true);
-    }
+    };
+    addGroups(result.groups, QStringLiteral("意味："));
+    if (showRelated) addGroups(result.relatedGroups, QStringLiteral("関連（似た意味）："));
 }
 bool MainWindow::eventFilter(QObject *object, QEvent *event) {
+    if (event->type() == QEvent::KeyPress) {
+        const auto *key = static_cast<QKeyEvent *>(event);
+        const bool plain = key->modifiers() == Qt::NoModifier || key->modifiers() == Qt::KeypadModifier;
+        // Down in the search box moves to the first candidate so that a word can be
+        // chosen and copied without the mouse.
+        if (object == input_ && plain && key->key() == Qt::Key_Down) {
+            for (int i = 0; i < results_->topLevelItemCount(); ++i) {
+                if (auto *group = results_->topLevelItem(i); group->childCount() > 0) {
+                    results_->setFocus(Qt::TabFocusReason);
+                    results_->setCurrentItem(group->child(0));
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (object == results_ && plain) {
+            auto *current = results_->currentItem();
+            if ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) && current && current->parent()) {
+                copyWord(current);
+                return true;
+            }
+            // Up from the first candidate returns to the search box.
+            if (key->key() == Qt::Key_Up && current && current->parent()
+                && results_->itemAbove(current) == current->parent()
+                && results_->indexOfTopLevelItem(current->parent()) == 0) {
+                input_->setFocus(Qt::TabFocusReason);
+                input_->selectAll();
+                return true;
+            }
+        }
+        return QMainWindow::eventFilter(object, event);
+    }
     if (object != results_->viewport() || event->type() != QEvent::ToolTip)
         return QMainWindow::eventFilter(object, event);
     auto *help = static_cast<QHelpEvent *>(event);

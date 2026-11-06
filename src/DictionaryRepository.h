@@ -10,12 +10,20 @@ struct MeaningGroup {
 };
 struct SearchResult {
     QVector<MeaningGroup> groups;
+    // Meanings linked by the dictionary's "similar" relation. Kept apart from
+    // same-meaning synonyms and not included in candidateCount().
+    QVector<MeaningGroup> relatedGroups;
     QString error;
     QString language;
     QString alternativeLanguage;
     QStringList spellings;
+    // Headwords actually searched when they differ from the input: the entry
+    // owning a spelling variant, or a case/width-normalized headword.
+    QStringList matchedWords;
+    bool viaAlias = false;
     bool found = false;
     int candidateCount() const;
+    int relatedCount() const;
 };
 struct WordMeaning {
     QString id;

@@ -7,10 +7,17 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSet>
+#include <algorithm>
 
 int SearchResult::candidateCount() const {
     int count = 0;
     for (const auto &group : groups) count += group.words.size();
+    return count;
+}
+int SearchResult::relatedCount() const {
+    int count = 0;
+    for (const auto &group : relatedGroups) count += group.words.size();
     return count;
 }
 DictionaryRepository::DictionaryRepository()
@@ -35,7 +42,7 @@ bool DictionaryRepository::open(const QString &path) {
         return false;
     }
     QSqlQuery check(db_);
-    if (!check.exec("PRAGMA user_version") || !check.next() || check.value(0).toInt() != 3) {
+    if (!check.exec("PRAGMA user_version") || !check.next() || check.value(0).toInt() != 4) {
         error_ = QStringLiteral("辞書DBの形式が未対応、または破損しています。日英辞書DBを再生成してください。");
     } else if (!check.exec("SELECT l.word,l.language,l.forms_json,l.search_key,src.reading_mode,s.id,s.source,d.definition,d.language,se.lemma_id "
                            "FROM lemmas l JOIN sources src ON src.id=l.source JOIN senses se ON se.lemma_id=l.id "
@@ -45,6 +52,8 @@ bool DictionaryRepository::open(const QString &path) {
     }
     if (error_.isEmpty() && !check.exec("SELECT lemma_id,language,word FROM lemma_aliases LIMIT 0"))
         error_ = QStringLiteral("辞書DBの別表記索引が不正です。再生成してください。");
+    if (error_.isEmpty() && !check.exec("SELECT synset_id,target_id,rel_type FROM synset_relations LIMIT 0"))
+        error_ = QStringLiteral("辞書DBの関連語データが不正です。再生成してください。");
     check.finish();
     if (!error_.isEmpty()) db_.close();
     return error_.isEmpty();
@@ -147,33 +156,63 @@ SearchResult DictionaryRepository::search(const QString &input, const QString &r
         for (int i = 0; i < selected.lemmaIds.size(); ++i) parameters.append(":lemma" + QString::number(i));
         match = "matched.id IN (" + parameters.join(',') + ")";
     }
-    QSqlQuery query(db_);
-    query.prepare("SELECT DISTINCT s.id, COALESCE(d.definition,''), candidate.word "
-        "FROM lemmas matched JOIN senses hit ON hit.lemma_id=matched.id "
-        "JOIN synsets s ON s.id=hit.synset_id "
-        "JOIN senses member ON member.synset_id=s.id "
-        "JOIN lemmas candidate ON candidate.id=member.lemma_id "
-        "LEFT JOIN synset_definitions d ON d.synset_id=s.id AND d.language=:language "
-        "WHERE matched.language=:language AND " + match + " "
-        "AND candidate.language=:language AND candidate.word<>:word AND candidate.word<>matched.word "
-        "ORDER BY s.id, candidate.word");
-    query.bindValue(":language", language);
-    query.bindValue(":word", word);
-    for (int i = 0; i < selected.lemmaIds.size(); ++i) query.bindValue(":lemma" + QString::number(i), selected.lemmaIds[i]);
-    if (!query.exec()) {
-        result.error = QStringLiteral("辞書の検索に失敗しました。\n%1").arg(query.lastError().text());
+    const auto bindMatch = [&](QSqlQuery &query) {
+        query.bindValue(":language", language);
+        query.bindValue(":word", word);
+        for (int i = 0; i < selected.lemmaIds.size(); ++i)
+            query.bindValue(":lemma" + QString::number(i), selected.lemmaIds[i]);
+    };
+    // Report which headword was searched when it is not literally the input.
+    if (!selected.lemmaIds.isEmpty()) {
+        result.viaAlias = true;
+        QSqlQuery headwords(db_);
+        headwords.prepare("SELECT DISTINCT matched.word FROM lemmas matched WHERE matched.language=:language AND "
+                          + match + " ORDER BY matched.word");
+        bindMatch(headwords);
+        if (headwords.exec())
+            while (headwords.next()) result.matchedWords.append(headwords.value(0).toString());
+    } else if (word != input.trimmed()) {
+        result.matchedWords.append(word);
+    }
+    // Same-meaning synonyms come from the matched synsets; related words come
+    // from synsets the dictionary marks as "similar" to them. Both exclude the
+    // input and the matched headwords, and neither is merged into the other.
+    const auto collect = [&](const QString &synsetColumn, const QString &joins, QVector<MeaningGroup> &groups) {
+        QSqlQuery query(db_);
+        query.prepare("SELECT DISTINCT " + synsetColumn + ", COALESCE(d.definition,''), candidate.word "
+            "FROM lemmas matched JOIN senses hit ON hit.lemma_id=matched.id " + joins +
+            "JOIN lemmas candidate ON candidate.id=member.lemma_id "
+            "LEFT JOIN synset_definitions d ON d.synset_id=" + synsetColumn + " AND d.language=:language "
+            "WHERE matched.language=:language AND " + match + " "
+            "AND candidate.language=:language AND candidate.word<>:word AND candidate.word<>matched.word "
+            "ORDER BY " + synsetColumn + ", candidate.word");
+        bindMatch(query);
+        if (!query.exec()) {
+            result.error = QStringLiteral("辞書の検索に失敗しました。\n%1").arg(query.lastError().text());
+            return false;
+        }
+        while (query.next()) {
+            const auto id = query.value(0).toString();
+            if (groups.isEmpty() || groups.last().id != id)
+                groups.append({id, query.value(1).toString(), {}});
+            groups.last().words.append(query.value(2).toString());
+        }
+        if (query.lastError().isValid()) { result.error = query.lastError().text(); return false; }
+        return true;
+    };
+    if (!collect("s.id", "JOIN synsets s ON s.id=hit.synset_id JOIN senses member ON member.synset_id=s.id ",
+                 result.groups)
+        || !collect("r.target_id", "JOIN synset_relations r ON r.synset_id=hit.synset_id AND r.rel_type='similar' "
+                    "JOIN senses member ON member.synset_id=r.target_id ", result.relatedGroups)) {
+        result.groups.clear();
+        result.relatedGroups.clear();
         return result;
     }
-    while (query.next()) {
-        const auto id = query.value(0).toString();
-        if (result.groups.isEmpty() || result.groups.last().id != id)
-            result.groups.append({id, query.value(1).toString(), {}});
-        result.groups.last().words.append(query.value(2).toString());
-    }
-    if (query.lastError().isValid()) {
-        result.groups.clear();
-        result.error = query.lastError().text();
-    }
+    // A meaning reached both directly and through "similar" is shown once, as synonyms.
+    QSet<QString> direct;
+    for (const auto &group : result.groups) direct.insert(group.id);
+    result.relatedGroups.erase(std::remove_if(result.relatedGroups.begin(), result.relatedGroups.end(),
+        [&](const MeaningGroup &group) { return direct.contains(group.id); }), result.relatedGroups.end());
     return result;
 }
 WordDetails DictionaryRepository::wordDetails(const QString &word, const QString &language,

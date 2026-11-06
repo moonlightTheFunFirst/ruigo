@@ -16,6 +16,7 @@
 #include <QDialogButtonBox>
 #include <QDialog>
 #include <QPushButton>
+#include <QCheckBox>
 #include <QSpinBox>
 #include <QFontComboBox>
 #include <QFontDatabase>
@@ -51,7 +52,7 @@ private slots:
             QVERIFY2(db.open(), qPrintable(db.lastError().text()));
             QSqlQuery q(db);
             const QStringList sql = {
-                "PRAGMA user_version=3",
+                "PRAGMA user_version=4",
                 "CREATE TABLE lemmas(id INTEGER PRIMARY KEY,word TEXT,language TEXT,forms_json TEXT DEFAULT '[]')",
                 "CREATE TABLE synsets(id TEXT PRIMARY KEY,source TEXT)",
                 "CREATE TABLE synset_definitions(synset_id TEXT,language TEXT,definition TEXT)",
@@ -84,7 +85,15 @@ private slots:
                 "INSERT INTO lemmas(id,word,language,source,search_key) VALUES (18,'哀しい','ja','ja-source','哀しい'),(19,'悲しげ','ja','ja-source','悲しげ'),(20,'哀しい','ja','ja-source','哀しい'),(21,'無関係な語','ja','ja-source','無関係な語')",
                 "INSERT INTO synsets VALUES ('alias1','ja-source'),('alias2','ja-source')",
                 "INSERT INTO senses VALUES ('alias1',18),('alias1',19),('alias2',20),('alias2',21)",
-                "INSERT INTO lemma_aliases VALUES (18,'ja','悲しい'),(18,'ja','美しい'),(18,'ja','SAD-JA'),(18,'ja','別''表記')"
+                "INSERT INTO lemma_aliases VALUES (18,'ja','悲しい'),(18,'ja','美しい'),(18,'ja','SAD-JA'),(18,'ja','別''表記')",
+                // "similar" relations: s1 -> similar1 (English words only, so Japanese searches on s1 gain nothing),
+                // alias1 -> similar2 (Japanese), a self-relation on alias1, and a non-"similar" relation that must be ignored.
+                "CREATE TABLE synset_relations(synset_id TEXT,target_id TEXT,rel_type TEXT,PRIMARY KEY(synset_id,rel_type,target_id))",
+                "INSERT INTO lemmas(id,word,language,source,search_key) VALUES (22,'gorgeous','en','en-source','gorgeous'),(23,'lovely','en','en-source','lovely'),(24,'物悲しい','ja','ja-source','物悲しい'),(25,'淋しい','ja','ja-source','淋しい')",
+                "INSERT INTO synsets VALUES ('similar1','en-source'),('similar2','ja-source')",
+                "INSERT INTO senses VALUES ('similar1',22),('similar1',23),('similar2',24),('similar2',25)",
+                "INSERT INTO synset_definitions VALUES ('similar1','en','very pleasing'),('similar2','ja','似た意味のテスト')",
+                "INSERT INTO synset_relations VALUES ('s1','similar1','similar'),('alias1','similar2','similar'),('alias1','alias1','similar'),('alias1','s3','hypernym')"
             };
             for (const auto &statement : sql) QVERIFY(q.exec(statement));
             q.finish();
@@ -140,6 +149,18 @@ private slots:
         }
         QSqlDatabase::removeDatabase("old2");
         QVERIFY(!repository.open(old2Path));
+        QVERIFY(repository.error().contains("再生成"));
+        const auto old3Path = temporary_.filePath("old3.sqlite");
+        QVERIFY(QFile::copy(fixture_, old3Path));
+        {
+            auto old = QSqlDatabase::addDatabase("QSQLITE", "old3");
+            old.setDatabaseName(old3Path);
+            QVERIFY(old.open());
+            QSqlQuery query(old);
+            QVERIFY(query.exec("PRAGMA user_version=3"));
+        }
+        QSqlDatabase::removeDatabase("old3");
+        QVERIFY(!repository.open(old3Path));
         QVERIFY(repository.error().contains("再生成"));
     }
     void history() {
@@ -219,6 +240,162 @@ private slots:
         QVERIFY(repository.search("artificial intelligence").found);
         QVERIFY(!repository.search("artificial  intelligence").found);
         QVERIFY(!repository.wordDetails("pretty", "en", "s1").showReadings);
+    }
+    void relatedWords() {
+        DictionaryRepository repository;
+        QVERIFY(repository.open(fixture_));
+        // English: s1 is "similar" to similar1. Synonyms stay as before; related words are separate.
+        const auto english = repository.search("beautiful", "en");
+        QCOMPARE(english.candidateCount(), 1);
+        QCOMPARE(english.relatedGroups.size(), 1);
+        QCOMPARE(english.relatedGroups[0].id, QString("similar1"));
+        QCOMPARE(english.relatedGroups[0].definition, QString("very pleasing"));
+        QCOMPARE(english.relatedGroups[0].words, (QStringList{"gorgeous", "lovely"})); // The input itself is excluded.
+        QCOMPARE(english.relatedCount(), 2);
+        // Japanese searches through s1 never pick up the English related words.
+        QVERIFY(repository.search("美しい", "ja").relatedGroups.isEmpty());
+        // Only "similar" is used, a self-relation is dropped as a direct meaning, and the
+        // matched headword (哀しい, reached through the alias) is excluded from related words.
+        const auto alias = repository.search("悲しい");
+        QCOMPARE(alias.relatedGroups.size(), 1);
+        QCOMPARE(alias.relatedGroups[0].id, QString("similar2"));
+        QCOMPARE(alias.relatedGroups[0].words, (QStringList{"淋しい", "物悲しい"}));
+        // UI: related groups follow the synonym groups with their own prefix.
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{});
+        MainWindow window(fixture_);
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *tree = window.findChild<QTreeWidget *>("results");
+        auto *heading = window.findChild<QLabel *>("resultHeading");
+        input->setText("beautiful");
+        QTest::keyClick(input, Qt::Key_Return);
+        QCOMPARE(tree->topLevelItemCount(), 2);
+        QVERIFY(tree->topLevelItem(0)->text(0).startsWith("意味："));
+        QCOMPARE(tree->topLevelItem(1)->text(0), QString("関連（似た意味）：very pleasing"));
+        QCOMPARE(tree->topLevelItem(1)->child(0)->data(0, Qt::UserRole).toString(), QString("gorgeous"));
+        QVERIFY(heading->text().contains("関連語：2件"));
+        settings.setValue("history/entries", QStringList{});
+    }
+    void relatedToggle() {
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{});
+        settings.remove("display/showRelated");
+        {
+            MainWindow window(fixture_);
+            auto *input = window.findChild<QLineEdit *>("searchInput");
+            auto *tree = window.findChild<QTreeWidget *>("results");
+            auto *heading = window.findChild<QLabel *>("resultHeading");
+            auto *history = window.findChild<QListWidget *>("historyList");
+            auto *check = window.findChild<QCheckBox *>("showRelatedCheck");
+            QVERIFY(check);
+            QVERIFY(check->isChecked()); // Shown by default.
+            input->setText("beautiful");
+            QTest::keyClick(input, Qt::Key_Return);
+            QCOMPARE(tree->topLevelItemCount(), 2);
+            QCOMPARE(history->count(), 1);
+            input->setText("編集中の入力"); // The toggle redraws the last result, not the edited text.
+            check->setChecked(false);
+            QCOMPARE(tree->topLevelItemCount(), 1);
+            QVERIFY(tree->topLevelItem(0)->text(0).startsWith("意味："));
+            QVERIFY(heading->text().contains("「beautiful」の類語候補：1件"));
+            QVERIFY(heading->text().contains("似た意味の関連語2件は非表示"));
+            QCOMPARE(history->count(), 1); // No new history entry.
+            QCOMPARE(input->text(), QString("編集中の入力"));
+            QVERIFY(!settings.value("display/showRelated").toBool());
+            check->setChecked(true);
+            QCOMPARE(tree->topLevelItemCount(), 2);
+            QVERIFY(heading->text().contains("関連語：2件"));
+            check->setChecked(false);
+            // A word with no synonyms and hidden related words gets the plain message.
+            settings.setValue("history/entries", QStringList{});
+        }
+        {
+            MainWindow restored(fixture_); // The choice survives a restart.
+            auto *check = restored.findChild<QCheckBox *>("showRelatedCheck");
+            QVERIFY(!check->isChecked());
+            auto *input = restored.findChild<QLineEdit *>("searchInput");
+            auto *heading = restored.findChild<QLabel *>("resultHeading");
+            input->setText("悲しい");
+            QTest::keyClick(input, Qt::Key_Return);
+            QCOMPARE(restored.findChild<QTreeWidget *>("results")->topLevelItemCount(), 1);
+            QVERIFY(heading->text().contains("似た意味の関連語2件は非表示"));
+        }
+        settings.remove("display/showRelated");
+        settings.setValue("history/entries", QStringList{});
+    }
+    void matchedHeadword() {
+        DictionaryRepository repository;
+        QVERIFY(repository.open(fixture_));
+        const auto alias = repository.search("悲しい");
+        QVERIFY(alias.viaAlias);
+        QCOMPARE(alias.matchedWords, QStringList{"哀しい"});
+        const auto exact = repository.search("哀しい");
+        QVERIFY(!exact.viaAlias);
+        QVERIFY(exact.matchedWords.isEmpty());
+        const auto folded = repository.search("Beautiful");
+        QVERIFY(!folded.viaAlias);
+        QCOMPARE(folded.matchedWords, QStringList{"beautiful"});
+        QCOMPARE(repository.search("ＡＩ").matchedWords, QStringList{"AI"});
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{});
+        MainWindow window(fixture_);
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *heading = window.findChild<QLabel *>("resultHeading");
+        input->setText("悲しい");
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(heading->text().contains("「悲しい」（「哀しい」の別表記）の類語候補"));
+        input->setText("Beautiful");
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(heading->text().contains("「Beautiful」（「beautiful」として検索）"));
+        input->setText("哀しい");
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(heading->text().contains("— 「哀しい」の類語候補"));
+        settings.setValue("history/entries", QStringList{});
+    }
+    void keyboardNavigation() {
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{});
+        MainWindow window(fixture_);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        window.activateWindow();
+        if (QGuiApplication::platformName() != "offscreen") QVERIFY(QTest::qWaitForWindowActive(&window));
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *tree = window.findChild<QTreeWidget *>("results");
+        input->setFocus();
+        input->setText("美しい");
+        QTest::keyClick(input, Qt::Key_Return);
+        QApplication::clipboard()->clear();
+        QTest::keyClick(input, Qt::Key_Down);
+        QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(tree));
+        QCOMPARE(tree->currentItem(), tree->topLevelItem(0)->child(0));
+        QTest::keyClick(tree, Qt::Key_Return);
+        QCOMPARE(QApplication::clipboard()->text(), QString("綺麗"));
+        QTest::keyClick(tree, Qt::Key_Down); // Next row is the second meaning's heading.
+        QTest::keyClick(tree, Qt::Key_Down);
+        QCOMPARE(tree->currentItem(), tree->topLevelItem(1)->child(0));
+        QApplication::clipboard()->clear();
+        QTest::keyClick(tree, Qt::Key_C, Qt::ControlModifier);
+        QCOMPARE(QApplication::clipboard()->text(), QString("麗しい"));
+        // Enter and Ctrl+C on a meaning heading copy nothing.
+        tree->setCurrentItem(tree->topLevelItem(0));
+        QApplication::clipboard()->clear();
+        QTest::keyClick(tree, Qt::Key_Return);
+        QTest::keyClick(tree, Qt::Key_C, Qt::ControlModifier);
+        QVERIFY(QApplication::clipboard()->text().isEmpty());
+        // Up from the first word returns to the search box with the text selected.
+        tree->setCurrentItem(tree->topLevelItem(0)->child(0));
+        tree->setFocus();
+        QTest::keyClick(tree, Qt::Key_Up);
+        QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(input));
+        QCOMPARE(input->selectedText(), QString("美しい"));
+        // Down with no candidates stays in the search box.
+        input->setText("存在しない語");
+        QTest::keyClick(input, Qt::Key_Return);
+        QTest::keyClick(input, Qt::Key_Down);
+        QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(input));
+        window.close();
+        settings.setValue("history/entries", QStringList{});
     }
     void spellingAliases() {
         DictionaryRepository repository;
@@ -378,7 +555,7 @@ private slots:
     void selfCheck() {
 #ifdef Q_OS_WIN
         const auto executable = QCoreApplication::applicationDirPath() + "/ruigo.exe";
-        for (const auto &path : {fixture_, temporary_.filePath("missing.sqlite"), temporary_.filePath("old.sqlite"), temporary_.filePath("old2.sqlite")}) {
+        for (const auto &path : {fixture_, temporary_.filePath("missing.sqlite"), temporary_.filePath("old.sqlite"), temporary_.filePath("old2.sqlite"), temporary_.filePath("old3.sqlite")}) {
             QProcess process;
             process.start(executable, {"--self-check", "--dictionary", QFileInfo(path).absoluteFilePath()});
             QVERIFY(process.waitForFinished(15000));
@@ -677,6 +854,8 @@ private slots:
             QCOMPARE(english.language, QString("en"));
             QVERIFY(english.found);
             if (QString(word) != "beautiful") QVERIFY(english.candidateCount() > 0);
+            else QVERIFY(english.relatedCount() > 0); // No same-meaning synonyms, but "similar" meanings exist.
+            qInfo("English %s related: %d words in %d meanings", word, english.relatedCount(), int(english.relatedGroups.size()));
             for (const auto &group : english.groups) {
                 QVERIFY(group.id.startsWith("oewn:2025:"));
                 QVERIFY(!group.definition.isEmpty());
