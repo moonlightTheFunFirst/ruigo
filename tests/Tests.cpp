@@ -1,5 +1,7 @@
 #include "DictionaryRepository.h"
 #include "MainWindow.h"
+#include <QPlainTextEdit>
+#include <QDir>
 #include "SearchHistory.h"
 #include <QApplication>
 #include <QAccessible>
@@ -1060,6 +1062,186 @@ private slots:
                 }
             }
         }
+    }
+    void unavailableKaikki() {
+        const auto oldPath = temporary_.filePath("old-kaikki.sqlite");
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", "old-kaikki-fixture");
+            db.setDatabaseName(oldPath);
+            QVERIFY(db.open());
+            QVERIFY(QSqlQuery(db).exec("PRAGMA user_version=1"));
+        }
+        QSqlDatabase::removeDatabase("old-kaikki-fixture");
+        KaikkiRepository old;
+        QVERIFY(old.open(oldPath).contains(QStringLiteral("再生成")));
+        QVERIFY(old.search({"bank"}, "en").isEmpty());
+        const auto brokenPath = temporary_.filePath("broken-kaikki.sqlite");
+        QFile brokenFile(brokenPath);
+        QVERIFY(brokenFile.open(QIODevice::WriteOnly));
+        QVERIFY(brokenFile.write("not SQLite") > 0);
+        brokenFile.close();
+        KaikkiRepository broken, missing;
+        QVERIFY(!broken.open(brokenPath).isEmpty());
+        QVERIFY(broken.search({"bank"}, "en").isEmpty());
+        QVERIFY(missing.open(temporary_.filePath("missing-kaikki.sqlite")).isEmpty());
+        QVERIFY(missing.search({"bank"}, "en").isEmpty());
+    }
+    void kaikkiSupplement() {
+        // A WordNet fixture copy with a small format-2 Kaikki DB beside it, as the app expects.
+        QDir(temporary_.path()).mkpath("kaikki-fixture");
+        const auto folder = temporary_.filePath("kaikki-fixture/");
+        QVERIFY(QFile::copy(fixture_, folder + "dictionary.sqlite"));
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", "kaikki-wordnet-fixture");
+            db.setDatabaseName(folder + "dictionary.sqlite");
+            QVERIFY(db.open());
+            // うつくしい is a reading of the WordNet headword 美しい (entry 1).
+            QVERIFY(QSqlQuery(db).exec("INSERT INTO lemma_aliases VALUES (1,'ja','うつくしい','reading')"));
+        }
+        QSqlDatabase::removeDatabase("kaikki-wordnet-fixture");
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", "kaikki-fixture");
+            db.setDatabaseName(folder + "kaikki.sqlite");
+            QVERIFY(db.open());
+            QSqlQuery q(db);
+            const QStringList sql = {
+                "PRAGMA user_version=2",
+                "CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                "CREATE TABLE entries(id INTEGER PRIMARY KEY, source_line INTEGER, word TEXT, language TEXT, pos TEXT, forms_json TEXT DEFAULT '[]')",
+                "CREATE TABLE senses(id INTEGER PRIMARY KEY, entry_id INTEGER, source_position INTEGER, glosses_json TEXT, gloss_language TEXT)",
+                "CREATE TABLE relations(id INTEGER PRIMARY KEY, entry_id INTEGER, sense_id INTEGER, kind TEXT, target_word TEXT, target_language TEXT, source_label TEXT)",
+                "CREATE TABLE spelling_references(sense_id INTEGER, target_entry_id INTEGER, PRIMARY KEY(sense_id, target_entry_id))",
+                // 美しい only refers to one kana entry; うつくしい also has an empty gloss to skip.
+                // 箸 refers to two kana entries はし (homographs), which must not be merged.
+                "INSERT INTO entries(id,source_line,word,language,pos) VALUES "
+                "(1,1,'美しい','ja','character'),(2,2,'うつくしい','ja','adj'),(3,3,'箸','ja','character'),"
+                "(4,4,'はし','ja','noun'),(5,5,'はし','ja','noun'),(6,6,'フィクスチャ語','ja','noun'),"
+                "(7,7,'beautiful','en','adj')",
+                R"(INSERT INTO senses VALUES (1,1,1,'["うつくしいの漢字表記。"]','ja'),)"
+                R"((2,2,1,'["見て感動を与える様。"]','ja'),(3,2,2,'[]','ja'),)"
+                R"((4,3,1,'["「はし」の漢字表記。"]','ja'),(5,4,1,'["川を渡る構造物。"]','ja'),)"
+                R"((6,5,1,'["食事に使う二本の棒。"]','ja'),(7,6,1,'["テスト専用の語。"]','ja'),)"
+                R"((8,7,1,'["美しい。"]','ja'))",
+                "INSERT INTO spelling_references VALUES (1,2),(4,4),(4,5)",
+                "INSERT INTO relations(entry_id,sense_id,kind,target_word,target_language) VALUES (6,7,'synonym','試験語','ja')",
+            };
+            for (const auto &statement : sql)
+                QVERIFY2(q.exec(statement), qPrintable(statement + "\n" + q.lastError().text()));
+        }
+        QSqlDatabase::removeDatabase("kaikki-fixture");
+
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{});
+        MainWindow window(folder + "dictionary.sqlite");
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *heading = window.findChild<QLabel *>("resultHeading");
+        auto *panel = window.findChild<QPlainTextEdit *>("kaikkiSupplement");
+        QVERIFY(input && heading && panel);
+        const auto searchFor = [&](const QString &word) {
+            input->setText(word);
+            QTest::keyClick(input, Qt::Key_Return);
+            return panel->toPlainText();
+        };
+
+        // One referenced kana entry: the pointer sense is replaced by a link, and the
+        // target entry follows with its route. The empty-gloss sense is not shown.
+        auto text = searchFor("美しい");
+        QVERIFY(!panel->isHidden());
+        QVERIFY(text.startsWith("Wiktionary / Kaikki"));
+        QVERIFY(text.contains("→ うつくしい の項目"));
+        QVERIFY(!text.contains("うつくしいの漢字表記"));
+        QVERIFY(text.contains("うつくしい [adj]（美しいから参照）"));
+        QCOMPARE(text.count("見て感動を与える様。"), 1);
+        QVERIFY(!text.contains("[日本語] \n") && !text.endsWith("[日本語] "));
+        QVERIFY(!heading->text().contains("WordNetには見出しがありません")); // WordNet has 美しい.
+
+        // Kana input resolved by WordNet to 美しい: うつくしい is reached directly and through
+        // 美しい's reference, but is shown once (deduplicated by entry id) with both routes.
+        text = searchFor("うつくしい");
+        QCOMPARE(text.count("うつくしい [adj]"), 1);
+        QVERIFY(text.contains("うつくしい [adj]（うつくしい、美しいから参照）"));
+        QVERIFY(text.contains("美しい [character]"));
+
+        // Several referenced kana entries: the original gloss stays, with one preview per
+        // entry, and the homographs are not merged into one entry.
+        text = searchFor("箸");
+        QVERIFY(text.contains("「はし」の漢字表記。"));
+        QVERIFY(text.contains("→ はし [noun] [日本語] 川を渡る構造物。"));
+        QVERIFY(text.contains("→ はし [noun] [日本語] 食事に使う二本の棒。"));
+        QVERIFY(!text.contains("（箸から参照）"));
+        QVERIFY(heading->text().contains("WordNetには見出しがありません"));
+
+        // Kaikki-only headword with a sense-linked synonym.
+        text = searchFor("フィクスチャ語");
+        QVERIFY(text.contains("フィクスチャ語 [noun]（フィクスチャ語）"));
+        QVERIFY(text.contains("テスト専用の語。"));
+        QVERIFY(text.contains("類語：試験語"));
+        QVERIFY(heading->text().contains("WordNetには見出しがありません"));
+
+        // English headword with a Japanese gloss; the WordNet result stays as before.
+        text = searchFor("beautiful");
+        QVERIFY(text.contains("beautiful [adj]"));
+        QVERIFY(text.contains("[日本語] 美しい。"));
+        QVERIFY(heading->text().contains("英語で検索"));
+
+        // In neither dictionary: no panel, the usual message.
+        searchFor("どちらにもない語");
+        QVERIFY(panel->isHidden());
+        QVERIFY(heading->text().contains("見出しが見つかりませんでした"));
+
+        // Without kaikki.sqlite beside the WordNet DB, the panel never appears.
+        MainWindow plain(fixture_);
+        auto *plainInput = plain.findChild<QLineEdit *>("searchInput");
+        plainInput->setText("美しい");
+        QTest::keyClick(plainInput, Qt::Key_Return);
+        QVERIFY(plain.findChild<QPlainTextEdit *>("kaikkiSupplement")->isHidden());
+        settings.setValue("history/entries", QStringList{});
+    }
+    void realKaikki() {
+        const QString folder = QStringLiteral(RUIGO_SOURCE_DIR "/data/");
+        if (!QFileInfo::exists(folder + "kaikki.sqlite")) QSKIP("Optional Kaikki DB is not generated");
+        KaikkiRepository repository;
+        QVERIFY(repository.open(folder + "kaikki.sqlite").isEmpty());
+        const auto run = repository.search({QStringLiteral("走る")}, "ja");
+        QVERIFY(!run.isEmpty());
+        QVERIFY(!run.first().senses.isEmpty());
+        QVERIFY(run.first().senses.first().targets.isEmpty());
+        const auto beautiful = repository.search({QStringLiteral("美しい")}, "ja");
+        QVERIFY(!beautiful.isEmpty());
+        QVERIFY(!beautiful.first().senses.isEmpty());
+        QVERIFY(!beautiful.first().senses.first().targets.isEmpty());
+        QCOMPARE(repository.entry(beautiful.first().senses.first().targets.first(), "ja").word,
+                 QStringLiteral("うつくしい"));
+
+        MainWindow window(folder + "dictionary.sqlite");
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *panel = window.findChild<QPlainTextEdit *>("kaikkiSupplement");
+        QVERIFY(input && panel);
+        input->setText(QStringLiteral("はしる"));
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(panel->toPlainText().contains(QStringLiteral("Wiktionary / Kaikki")));
+        QVERIFY(panel->toPlainText().contains(QStringLiteral("はしる")));
+        QVERIFY(panel->toPlainText().contains(QStringLiteral("走る")));
+        input->setText(QStringLiteral("走る"));
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(panel->toPlainText().contains(QStringLiteral("走る")));
+        QVERIFY(!panel->toPlainText().contains(QStringLiteral("はしる [")));
+        input->setText(QStringLiteral("こう"));
+        QTest::keyClick(input, Qt::Key_Return);
+        auto *choices = window.findChild<QListWidget *>("spellingChoices");
+        QVERIFY(choices && choices->count() > 1);
+        QVERIFY(panel->toPlainText().contains(QStringLiteral("こう [")));
+        emit choices->itemActivated(choices->item(0));
+        QVERIFY(input->text() != QStringLiteral("こう"));
+        QVERIFY(panel->toPlainText().contains(QStringLiteral("こう [")));
+        input->setText(QStringLiteral("ウィキクォート"));
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(panel->toPlainText().contains(QStringLiteral("ウィキクォート")));
+        QVERIFY(window.findChild<QLabel *>("resultHeading")->text().contains(
+            QStringLiteral("WordNetには見出しがありません")));
+        input->setText(QStringLiteral("zzznosuchentryzzzz"));
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(panel->isHidden());
     }
     void realDictionary() {
         const auto path = QStringLiteral(RUIGO_SOURCE_DIR "/data/dictionary.sqlite");

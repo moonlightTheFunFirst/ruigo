@@ -1,5 +1,6 @@
 #pragma once
 #include "DictionaryRepository.h"
+#include "KaikkiRepository.h"
 #include "SearchHistory.h"
 #include <QMainWindow>
 class QLineEdit;
@@ -10,6 +11,7 @@ class QLabel;
 class QPushButton;
 class QCheckBox;
 class QSplitter;
+class QPlainTextEdit;
 class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(const QString &dictionaryPath, QWidget *parent = nullptr);
@@ -18,7 +20,8 @@ protected:
     bool eventFilter(QObject *object, QEvent *event) override;
 private:
     void search(const QString &word, const QString &language = {}, bool record = false,
-                const QVector<qint64> &entries = {});
+                const QVector<qint64> &entries = {}, const QString &originalInput = {});
+    void updateKaikki();
     void showResult();
     void showChoices(const QStringList &headwords, const QStringList &hints,
                      const QVector<QVector<qint64>> &entries);
@@ -32,10 +35,13 @@ private:
     QSettings settings_;
     SearchHistory history_{settings_};
     DictionaryRepository repository_;
+    KaikkiRepository kaikki_;
     QString language_ = QStringLiteral("ja");
     QString alternativeLanguage_;
     SearchResult lastResult_;
     QString lastWord_;
+    QString originalWord_;
+    QPlainTextEdit *kaikkiPanel_;
     QPushButton *alternativeButton_;
     QPushButton *formOfButton_;
     QCheckBox *showRelatedCheck_;

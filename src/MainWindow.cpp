@@ -18,6 +18,9 @@
 #include <QFontComboBox>
 #include <QFontDatabase>
 #include <QFormLayout>
+#include <QDir>
+#include <QFileInfo>
+#include <QPlainTextEdit>
 #include <QSpinBox>
 #include <QPushButton>
 #include <QCheckBox>
@@ -223,7 +226,7 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     connect(formOfButton_, &QPushButton::clicked, this, [this] {
         // Search only the entries that the form/reading belongs to (e.g. the verb "see").
         if (lastResult_.formOf.size() == 1) {
-            search(lastResult_.formOf.first(), language_, true, lastResult_.formOfEntries.value(0));
+            search(lastResult_.formOf.first(), language_, true, lastResult_.formOfEntries.value(0), originalWord_);
             return;
         }
         showChoices(lastResult_.formOf, lastResult_.formOfHints, lastResult_.formOfEntries);
@@ -238,7 +241,7 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         const auto language = item->data(Qt::UserRole).toString();
         QVector<qint64> entries;
         for (const auto &id : item->data(Qt::UserRole + 2).toList()) entries.append(id.toLongLong());
-        search(word, language, true, entries);
+        search(word, language, true, entries, originalWord_);
     };
     connect(spellingChoices_, &QListWidget::itemClicked, this, chooseSpelling);
     connect(spellingChoices_, &QListWidget::itemActivated, this, chooseSpelling);
@@ -262,6 +265,13 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     results_->addAction(copyAction);
     connect(copyAction, &QAction::triggered, this, [this] { copyWord(results_->currentItem()); });
     rightLayout->addWidget(results_);
+    kaikkiPanel_ = new QPlainTextEdit(right);
+    kaikkiPanel_->setObjectName("kaikkiSupplement");
+    kaikkiPanel_->setAccessibleName(QStringLiteral("Wiktionary / Kaikki の補足"));
+    kaikkiPanel_->setReadOnly(true);
+    kaikkiPanel_->setMaximumHeight(180);
+    kaikkiPanel_->hide();
+    rightLayout->addWidget(kaikkiPanel_);
     auto *hint = new QLabel(QStringLiteral("類語候補をダブルクリック・Enter・Ctrl+Cでコピー ／ 検索欄で↓で候補へ移動 ／ 右クリックで操作"));
     hint->setObjectName("resultHint");
     hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
@@ -301,6 +311,8 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         heading_->setText(repository_.error());
         heading_->show();
     }
+    const auto warning = kaikki_.open(QFileInfo(dictionaryPath).dir().filePath("kaikki.sqlite"));
+    if (!warning.isEmpty()) statusBar()->showMessage(warning, 15000);
     applyDisplaySettings();
     input_->setFocus();
 }
@@ -440,7 +452,7 @@ void MainWindow::deleteHistory() {
     refreshHistory(); // The remaining same-spelling row may no longer need its label.
 }
 void MainWindow::search(const QString &input, const QString &requestedLanguage, bool record,
-                        const QVector<qint64> &entries) {
+                        const QVector<qint64> &entries, const QString &originalInput) {
     const auto word = input.trimmed();
     if (word.isEmpty()) return;
     input_->setText(word);
@@ -449,10 +461,78 @@ void MainWindow::search(const QString &input, const QString &requestedLanguage, 
     lastResult_ = entries.isEmpty() ? repository_.search(word, requestedLanguage)
                                     : repository_.searchEntries(word, requestedLanguage, entries);
     lastWord_ = word;
+    originalWord_ = originalInput.isEmpty() ? word : originalInput;
     language_ = lastResult_.language;
     alternativeLanguage_ = lastResult_.alternativeLanguage;
     if (record) { history_.add(word, language_); refreshHistory(); }
+    updateKaikki();
     showResult();
+}
+
+void MainWindow::updateKaikki() {
+    kaikkiPanel_->clear();
+    kaikkiPanel_->hide();
+    if (!lastResult_.error.isEmpty()) return;
+    QStringList words{originalWord_, lastWord_};
+    words.append(lastResult_.matchedWords);
+    const auto direct = kaikki_.search(words, language_);
+    QHash<qint64, QStringList> paths;
+    QHash<qint64, KaikkiEntry> targets;
+    QVector<KaikkiEntry> additional;
+    for (const auto &entry : direct) paths[entry.id].append(entry.word);
+    for (const auto &entry : direct) {
+        for (const auto &sense : entry.senses) {
+            for (const auto id : sense.targets) {
+                if (!targets.contains(id)) targets.insert(id, kaikki_.entry(id, language_));
+                const auto &target = targets[id];
+                if (sense.targets.size() != 1 || !target.id || target.senses.isEmpty()) continue;
+                if (!paths.contains(id)) additional.append(target);
+                paths[id].append(QStringLiteral("%1から参照").arg(entry.word));
+            }
+        }
+    }
+    QStringList sections;
+    QSet<qint64> listedPreviews;
+    const auto appendEntry = [&](const KaikkiEntry &entry, bool followReferences) {
+        QStringList lines;
+        for (const auto &sense : entry.senses) {
+            const auto single = sense.targets.size() == 1 ? targets.value(sense.targets.first()) : KaikkiEntry{};
+            if (followReferences && single.id && !single.senses.isEmpty()) {
+                lines.append(QStringLiteral("→ %1 の項目").arg(single.word));
+            } else {
+                lines.append(QStringLiteral("[%1] %2").arg(DictionaryRepository::languageName(sense.language),
+                                                            sense.glosses.join(QStringLiteral(" / "))));
+                if (followReferences && sense.targets.size() > 1) {
+                    for (const auto id : sense.targets) {
+                        const auto target = targets.value(id);
+                        if (!target.id || target.senses.isEmpty()) continue;
+                        const auto label = QStringLiteral("  → %1 [%2]").arg(target.word, target.pos);
+                        if (paths.contains(id) || listedPreviews.contains(id)) {
+                            lines.append(label + QStringLiteral("（別掲）"));
+                        } else {
+                            const auto &preview = target.senses.first();
+                            lines.append(label + QStringLiteral(" [%1] %2").arg(
+                                DictionaryRepository::languageName(preview.language), preview.glosses.first()));
+                            listedPreviews.insert(id);
+                        }
+                    }
+                }
+            }
+            if (!sense.synonyms.isEmpty()) lines.append(QStringLiteral("類語：%1").arg(sense.synonyms.join("、")));
+        }
+        if (!entry.synonyms.isEmpty()) lines.append(QStringLiteral("類語：%1").arg(entry.synonyms.join("、")));
+        if (lines.isEmpty()) return;
+        auto routes = paths.value(entry.id);
+        routes.removeDuplicates();
+        sections.append(QStringLiteral("%1 [%2]（%3）\n%4").arg(entry.word, entry.pos,
+                            routes.join(QStringLiteral("、")), lines.join('\n')));
+    };
+    for (const auto &entry : direct) appendEntry(entry, true);
+    for (const auto &entry : additional) appendEntry(entry, false);
+    if (!sections.isEmpty()) {
+        kaikkiPanel_->setPlainText(QStringLiteral("Wiktionary / Kaikki\n\n") + sections.join("\n\n"));
+        kaikkiPanel_->show();
+    }
 }
 void MainWindow::showChoices(const QStringList &headwords, const QStringList &hints,
                              const QVector<QVector<qint64>> &entries) {
@@ -530,7 +610,9 @@ void MainWindow::showResult() {
         return;
     }
     if (!result.found) {
-        heading_->setText(heading_->text() + QStringLiteral("\n見出しが見つかりませんでした"));
+        heading_->setText(heading_->text() + (kaikkiPanel_->isHidden()
+            ? QStringLiteral("\n見出しが見つかりませんでした")
+            : QStringLiteral("\nWordNetには見出しがありません")));
         return;
     }
     if (result.groups.isEmpty())

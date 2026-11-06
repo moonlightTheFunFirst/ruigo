@@ -227,9 +227,9 @@ DB欠落・破損、履歴100件と永続化、Enter検索、コピー、0件、
 ```powershell
 .venv/Scripts/python.exe -m unittest discover -s tests -p test_dictionary_aliases.py
 ```
-## Kaikki の変換と品質検証（開発用）
+## Kaikki の補足表示とDBの生成
 
-AGENTS.md 第14節の第1段階として、日本語版 Wiktionary の Kaikki 抽出データを
+日本語版 Wiktionary の Kaikki 抽出データを
 独立した `data/kaikki.sqlite` に変換できます。Python 標準ライブラリだけを使います。
 集計で比較するため、先に上記の手順で WordNet の `data/dictionary.sqlite` を用意してください。
 
@@ -258,9 +258,21 @@ python tools/import_kaikki.py .wn/kaikki-candidate.jsonl.gz --evaluate-candidate
 | 日本語 | 128,380 | 201,379 | 94,380 | 32,237（12.24%） |
 | 英語 | 58,509 | 107,054 | 34,072 | 442（0.29%） |
 
-変換後のDBは約152 MBです。収録できた翻訳はすべて見出し側に付き、語義ラベルがある場合は原文を保持します。
+形式2のDBは約153 MBです。収録できた翻訳はすべて見出し側に付き、語義ラベルがある場合は原文を保持します。
 このスナップショットでは、類語・反意語・関連語の関係先言語が抽出結果から確認できず、収録件数はいずれも0件でした。
 [日本語版の抽出コード](https://github.com/tatuylonen/wiktextract/blob/19f9a30/src/wiktextract/extractor/ja/linkage.py)
 では異言語へのリンクも同じ形式にまとめられるため、見出しの言語を一律には引き継げません。
 語義の補足に使える一方、類語の補足に使うには関係先言語を確認できるデータが必要です。
-Qt アプリと配布物への組み込みは第2段階で扱います。
+
+アプリで補足を表示するには、生成した形式2の `kaikki.sqlite` を、アプリが使う
+`dictionary.sqlite` と同じフォルダに置いて再起動します。Windows の開発ビルドでは、
+プロジェクトの `data/kaikki.sqlite` があればビルド時に `win/build/mingw-release/data/` へコピーします
+（`-Rebuild`・`full_rebuild_and_deploy.bat` でビルドフォルダを作り直した後も同様）。
+DBを生成・更新した後は `build.ps1` をもう一度実行してください。配布版では `ruigo.exe` と同じ階層の `data/` に置きます。
+標準の配布物は WordNet のDBを同梱します。Kaikki DB は利用者が手元で生成して追加します。
+形式1を使っていた場合は上のコマンドで再生成してください。
+
+検索結果に「Wiktionary / Kaikki」欄が出ると、見出しの語義を確認できます。
+WordNetで見出しを選んだ場合も、元の入力語の項目があれば併せて表示します。
+形式2の実データでは語義単位で参照先が1項目のものが8,905件、複数項目が3,413件、
+未解決が2,240件でした。未解決のうち67件は説明と表記候補が一致しませんでした。

@@ -173,11 +173,15 @@ if ($Deploy) {
     Remove-GeneratedDirectory $outputDir
     New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
     Copy-Item -LiteralPath "$buildDir/ruigo.exe" -Destination $outputDir
-    Copy-Item -LiteralPath "$projectRoot/data" -Destination $outputDir -Recurse -Force
+    New-Item -ItemType Directory -Path "$outputDir/data" | Out-Null
+    Copy-Item -LiteralPath "$projectRoot/data/dictionary.sqlite" -Destination "$outputDir/data"
     Copy-Item -LiteralPath "$projectRoot/licenses" -Destination $outputDir -Recurse -Force
     Copy-Item -LiteralPath "$projectRoot/THIRD_PARTY_NOTICES.md" -Destination $outputDir -Force
     Invoke-Checked "$qtBin/windeployqt.exe" @('--qtpaths', "$qtBin/qtpaths.exe", '--release', '--compiler-runtime', '--exclude-plugins', 'qsqlmysql,qsqlpsql,qsqlodbc,qsqlibase,qsqlmimer', '--no-translations', '--no-system-d3d-compiler', '--no-opengl-sw', "$outputDir/ruigo.exe")
     if (!(Test-Path "$outputDir/sqldrivers/qsqlite.dll")) { throw 'QSQLITE plugin missing from deployment.' }
     Test-DeployedApplication
 }
-if ($Run) { Start-Process -FilePath "$buildDir/ruigo.exe" -WorkingDirectory $buildDir -WindowStyle Hidden }
+if ($Run) {
+    # data/kaikki.sqlite, when generated, is copied into the build folder by CMake (ruigo_assets).
+    Start-Process -FilePath "$buildDir/ruigo.exe" -WorkingDirectory $buildDir -WindowStyle Hidden
+}

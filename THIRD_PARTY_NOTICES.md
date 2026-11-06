@@ -54,6 +54,21 @@ retained and shown as related words apart from synonyms. Examples, other
 relations and pronunciations are not exposed. No definitions or translations are generated.
 This conversion is not endorsed by the dictionary authors.
 
+## Optional Kaikki / Japanese Wiktionary data
+
+The app can read a locally generated `kaikki.sqlite`. It is built by
+`tools/import_kaikki.py` from the [Kaikki Japanese Wiktionary extract](https://kaikki.org/jawiktionary/rawdata.html)
+of the 2026-11-01 dump, extracted on 2026-11-02. The conversion selects Japanese
+and English entries, filters relations and adds an index of verified spelling
+references. See README.md for the input hash and generation steps.
+
+Text comes from [Japanese Wiktionary and its contributors](https://ja.wiktionary.org/).
+Find the original page by looking up the displayed source spelling on that site.
+Wikimedia's [Terms of Use](https://foundation.wikimedia.org/wiki/Policy:Terms_of_Use)
+describe CC BY-SA 4.0 attribution and reuse requirements, including exceptions
+that may apply to imported content. The standard app package does not include
+this optional SQLite database.
+
 ## Qt 6
 
 The application dynamically links Qt Core, Gui, Widgets and Sql, including

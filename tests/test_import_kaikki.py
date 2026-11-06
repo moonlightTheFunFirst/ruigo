@@ -11,6 +11,29 @@ from tools import import_kaikki
 
 
 class KaikkiImportTest(unittest.TestCase):
+    def test_spelling_references_are_matched_per_sense(self):
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.executescript(import_kaikki.SCHEMA)
+            forms = json.dumps([{"form": word, "tags": [tag]} for word, tag in [
+                ("はし", "transliteration"), ("キョウ", "transliteration"), ("べつ", "kanji")]])
+            db.executemany("INSERT INTO entries VALUES (?,?,?,'ja','noun',?)", [
+                (1, 1, "箸", forms), (2, 2, "はし", "[]"), (3, 3, "はし", "[]"),
+                (4, 4, "キョウ", "[]"), (5, 5, "橋", forms), (6, 6, "別", forms),
+                (7, 7, "べつ", "[]")])
+            db.executemany("INSERT INTO senses VALUES (?,?,?,?,'ja')", [
+                (1, 1, 1, json.dumps(["「はし」の漢字表記。"], ensure_ascii=False)),
+                (2, 1, 2, json.dumps(["べつの漢字表記"], ensure_ascii=False)),
+                (3, 5, 1, json.dumps(["川を渡る構造物。はしの漢字表記。"], ensure_ascii=False)),
+                (4, 6, 1, json.dumps(["キョウの漢字表記。"], ensure_ascii=False))])
+            from collections import Counter
+            stats = Counter()
+            import_kaikki.build_references(db, stats)
+            self.assertEqual(db.execute("SELECT * FROM spelling_references ORDER BY 1,2").fetchall(),
+                             [(1, 2), (1, 3), (4, 4)])
+            self.assertEqual(stats["reference_mismatch_senses"], 1)
+            self.assertEqual((stats["reference_single"], stats["reference_multiple"],
+                              stats["reference_unresolved"]), (1, 1, 1))
+
     def test_quality_and_scope(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

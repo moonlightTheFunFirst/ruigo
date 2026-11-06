@@ -6,6 +6,7 @@ from contextlib import closing
 import gzip
 import hashlib
 import json
+import re
 from pathlib import Path
 import sqlite3
 import sys
@@ -24,7 +25,7 @@ LANGUAGES = ("ja", "en")
 KINDS = {"translations": "translation", "synonyms": "synonym",
          "antonyms": "antonym", "related": "related"}
 SCHEMA = """
-PRAGMA user_version=1;
+PRAGMA user_version=2;
 PRAGMA foreign_keys=ON;
 CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE entries(
@@ -49,7 +50,41 @@ CREATE INDEX entries_lookup ON entries(language, word);
 CREATE INDEX relations_entry ON relations(entry_id, kind);
 CREATE INDEX relations_sense ON relations(sense_id, kind);
 CREATE INDEX relations_target ON relations(target_language, target_word);
+CREATE TABLE spelling_references(
+    sense_id INTEGER NOT NULL REFERENCES senses(id),
+    target_entry_id INTEGER NOT NULL REFERENCES entries(id),
+    PRIMARY KEY(sense_id, target_entry_id)
+);
 """
+REFERENCE = re.compile(r"(?:「([ぁ-ゖァ-ヺー]+)」|([ぁ-ゖァ-ヺー]+))の漢字表記。?")
+
+
+def build_references(db, stats):
+    entries = db.execute("""SELECT e.id,e.word,e.forms_json FROM entries e WHERE e.language='ja'
+                            AND EXISTS (SELECT 1 FROM senses s WHERE s.entry_id=e.id
+                                        AND s.glosses_json LIKE '%の漢字表記%')""")
+    for entry_id, word, forms in entries:
+        senses = []
+        for sense_id, glosses in db.execute(
+                "SELECT id,glosses_json FROM senses WHERE entry_id=?", (entry_id,)):
+            matches = [REFERENCE.fullmatch(gloss.strip()) for gloss in json.loads(glosses)]
+            if not matches or not all(matches):
+                break
+            senses.append((sense_id, {m[1] or m[2] for m in matches}))
+        else:
+            forms = {form.get("form") for form in json.loads(forms)
+                     if isinstance(form, dict) and isinstance(form.get("form"), str)
+                     and isinstance(form.get("tags"), list) and "transliteration" in form["tags"]}
+            for sense_id, labels in senses:
+                targets = []
+                matched = forms & labels
+                if forms and not matched:
+                    stats["reference_mismatch_senses"] += 1
+                for spelling in sorted(matched - {word}):
+                    targets.extend(db.execute("SELECT id FROM entries WHERE language='ja' AND word=?", (spelling,)))
+                stats["reference_" + ("multiple" if len(targets) > 1 else "single" if targets else "unresolved")] += 1
+                db.executemany("INSERT INTO spelling_references VALUES (?,?)",
+                               ((sense_id, target[0]) for target in targets))
 
 
 def open_source(path):
@@ -193,6 +228,7 @@ def build(source, output, wordnet, *, evaluate=False, candidate_url=None, dump_d
             db.execute("ATTACH DATABASE ? AS wordnet", (wordnet.resolve().as_uri() + "?mode=ro",))
             db.executescript(SCHEMA)
             stats = ingest(db, source, digest)
+            build_references(db, stats)
             report = quality_report(db)
             if any(not report[language]["headwords"] for language in LANGUAGES):
                 raise ValueError("Kaikki must contain both Japanese and English headwords")
