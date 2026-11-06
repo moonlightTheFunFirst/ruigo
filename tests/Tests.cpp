@@ -2,6 +2,10 @@
 #include "MainWindow.h"
 #include "SearchHistory.h"
 #include <QApplication>
+#include <QAccessible>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
 #include <QClipboard>
 #include <QElapsedTimer>
 #include <QFile>
@@ -536,6 +540,52 @@ private slots:
         QCOMPARE(fallback.font(), original);
         settings.remove("display");
         window.close();
+    }
+    void collapseExpand() {
+        const auto path = QStringLiteral(RUIGO_SOURCE_DIR "/data/dictionary.sqlite");
+        if (!QFile::exists(path)) QSKIP("Generate the real dictionary to run integration tests");
+        MainWindow window(path);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+#ifdef Q_OS_WIN
+        // Request the UIA root just as a Windows accessibility client does.
+        SendMessageW(reinterpret_cast<HWND>(window.winId()), WM_GETOBJECT, 0, -25);
+#endif
+        if (!QAccessible::isActive()) QSKIP("Requires an active accessibility backend");
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *tree = window.findChild<QTreeWidget *>("results");
+        for (const auto &word : {"花", "美しい", "bank", "good", "凡そ"}) {
+            input->setText(QString::fromUtf8(word));
+            QTest::keyClick(input, Qt::Key_Return);
+            QVERIFY(tree->topLevelItemCount() > 0);
+            QApplication::processEvents();
+            auto *accessible = QAccessible::queryAccessibleInterface(tree);
+            QVERIFY(accessible);
+            const auto checkAccessible = [&] {
+                for (int row = 0; row < accessible->childCount(); ++row) {
+                    auto *child = accessible->child(row);
+                    QVERIFY(child);
+                    QCOMPARE(accessible->indexOfChild(child), row);
+                }
+            };
+            checkAccessible();
+            for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+                auto *group = tree->topLevelItem(i);
+                tree->scrollToItem(group);
+                QApplication::processEvents();
+                for (int n = 0; n < 3; ++n) {
+                    auto rect = tree->visualItemRect(group);
+                    const QPoint arrow(rect.left() - tree->indentation() / 2, rect.center().y());
+                    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, arrow);
+                    QVERIFY(!group->isExpanded());
+                    checkAccessible();
+                    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, arrow);
+                    QVERIFY(group->isExpanded());
+                    QApplication::processEvents();
+                    checkAccessible();
+                }
+            }
+        }
     }
     void realDictionary() {
         const auto path = QStringLiteral(RUIGO_SOURCE_DIR "/data/dictionary.sqlite");

@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include <QApplication>
+#include <QAccessible>
 #include <QAction>
 #include <QClipboard>
 #include <QCloseEvent>
@@ -205,6 +206,12 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     results_ = new QTreeWidget;
     results_->setObjectName("results");
     results_->viewport()->installEventFilter(this);
+    // Qt 6.8.2 does not invalidate QAccessibleTree's row cache on collapse.
+    // Windows UI Automation can then traverse stale/cyclic sibling indexes.
+    connect(results_, &QTreeWidget::itemCollapsed, this, [this] {
+        QAccessibleTableModelChangeEvent event(results_, QAccessibleTableModelChangeEvent::ModelReset);
+        QAccessible::updateAccessibility(&event);
+    });
     results_->setHeaderHidden(true);
     results_->setWordWrap(true);
     results_->setContextMenuPolicy(Qt::CustomContextMenu);
