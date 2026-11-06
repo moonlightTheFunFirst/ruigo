@@ -383,7 +383,9 @@ void MainWindow::applyDisplaySettings() {
     setStyleSheet(QStringLiteral(
         "QListWidget::item, QTreeWidget::item { padding: 3px 2px; }"
         "QListWidget::item:selected, QTreeWidget::item:selected { background: %1; color: %2; }"
-        "QLabel#resultHint { color: %3; }").arg(selection.name(), text.name(), secondary.name()));
+        "QLabel#resultHint { color: %3; }"
+        // The status bar otherwise frames its items, leaving a stray "|" at the bottom right.
+        "QStatusBar::item { border: none; }").arg(selection.name(), text.name(), secondary.name()));
     // Native widget styles can resolve their own font instead of inheriting the
     // main window's font once a style sheet is present.
     const auto font = displayFont();
