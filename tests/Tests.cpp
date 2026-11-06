@@ -32,7 +32,7 @@
 #include <QTest>
 #include <QTreeWidget>
 #include <QToolTip>
-#include <QHelpEvent>
+#include <QTextBrowser>
 #include <QSplitter>
 #include <algorithm>
 
@@ -829,10 +829,14 @@ private slots:
         QTest::keyClick(input, Qt::Key_Return);
         QCOMPARE(tree->topLevelItemCount(), 2);
         auto *word = tree->topLevelItem(0)->child(0);
-        QVERIFY(word->toolTip(0).isEmpty()); // Details are loaded only on hover.
+        QVERIFY(word->toolTip(0).isEmpty()); // Details are loaded only for the selected candidate.
+        auto *details = window.findChild<QTextBrowser *>("wordDetails");
+        QVERIFY(details && details->isVisible());
+        QVERIFY(details->toPlainText().contains("候補を選ぶと"));
         tree->scrollToItem(word);
         QApplication::processEvents();
         QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, tree->visualItemRect(word).center());
+        QVERIFY(details->toPlainText().contains("読み：きれい"));
         QTest::mouseDClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, tree->visualItemRect(word).center());
         QCOMPARE(QApplication::clipboard()->text(), QString("綺麗"));
         input->setText("存在しないテスト語");
@@ -906,58 +910,42 @@ private slots:
         MainWindow missing(temporary_.filePath("missing.sqlite"));
         QVERIFY(missing.findChild<QLabel *>("resultHeading")->text().contains("見つかりません"));
     }
-    void tooltips() {
-        if (QGuiApplication::platformName() == "offscreen" || QGuiApplication::platformName() == "minimal")
-            QSKIP("Tooltip window visibility requires a desktop");
+    void wordDetailsPanel() {
         QSettings settings;
         settings.setValue("display/fontFamily", QFontDatabase::systemFont(QFontDatabase::GeneralFont).family());
         settings.setValue("display/fontSize", 18);
         MainWindow window(fixture_);
-        window.show();
-        window.activateWindow();
-        QVERIFY(QTest::qWaitForWindowActive(&window));
         auto *input = window.findChild<QLineEdit *>("searchInput");
         auto *tree = window.findChild<QTreeWidget *>("results");
+        auto *details = window.findChild<QTextBrowser *>("wordDetails");
+        QVERIFY(input && tree && details);
+        QCOMPARE(details->font().pointSize(), 18);
         input->setText("美しい");
         QTest::keyClick(input, Qt::Key_Return);
         auto *word = tree->topLevelItem(0)->child(0);
         QVERIFY(word->toolTip(0).isEmpty());
-        const auto hover = [&](QTreeWidgetItem *item) {
-            tree->scrollToItem(item);
-            QApplication::processEvents();
-            const auto point = tree->visualItemRect(item).center();
-            QHelpEvent event(QEvent::ToolTip, point, tree->viewport()->mapToGlobal(point));
-            QApplication::sendEvent(tree->viewport(), &event);
-        };
-        hover(word);
-        QTRY_VERIFY(QToolTip::isVisible());
-        const auto text = QToolTip::text();
+        tree->setCurrentItem(word);
+        const auto text = details->toPlainText();
+        QVERIFY(text.startsWith("綺麗"));
         QVERIFY(text.contains("読み：きれい"));
-        QVERIFY(text.contains("現在の意味</b><br>テスト用の意味"));
-        QVERIFY(text.contains("別の意味 &lt;テスト&gt; &amp; 確認"));
+        QVERIFY(text.contains("現在の意味"));
+        QVERIFY(text.contains("テスト用の意味"));
+        QVERIFY(text.contains("別の意味 <テスト> & 確認")); // Escaped HTML is shown as text.
         QVERIFY(text.contains("2. 説明なし"));
         QVERIFY(text.contains("3. 説明なし"));
         QVERIFY(!text.contains("べつよみ"));
         QVERIFY(!text.contains("Do not display"));
-        hover(word);
-        QCOMPARE(QToolTip::text(), text);
-        hover(tree->topLevelItem(1)->child(0));
-        QVERIFY(QToolTip::text().contains("読み：未収録"));
-        QVERIFY(QToolTip::text().contains("現在の意味</b><br>説明なし"));
-        QVERIFY(QToolTip::text().contains("ほかに収録されている意味</b><br>なし"));
-        // A long definition must wrap within the supported fixed-width table.
-        word->setData(0, Qt::UserRole + 2, QStringLiteral("これは長い定義の折り返しを確認するテストです。").repeated(6));
-        hover(word);
-        QTRY_VERIFY(QToolTip::isVisible());
-        for (auto *widget : QApplication::topLevelWidgets()) {
-            if (widget->windowType() == Qt::ToolTip && widget->isVisible()) {
-                QVERIFY(widget->width() < 500);
-                QCOMPARE(QToolTip::font().pointSize(), 18);
-                QVERIFY(widget->grab().save("tooltip-long.png"));
-            }
-        }
-        QToolTip::hideText();
-        window.close();
+        tree->setCurrentItem(tree->topLevelItem(1)->child(0));
+        QVERIFY(details->toPlainText().contains("読み：未収録"));
+        QVERIFY(details->toPlainText().contains("説明なし"));
+        QVERIFY(details->toPlainText().contains("ほかに収録されている意味"));
+        QVERIFY(details->toPlainText().endsWith("なし"));
+        tree->setCurrentItem(tree->topLevelItem(0)); // A meaning heading shows the hint.
+        QVERIFY(details->toPlainText().contains("候補を選ぶと"));
+        tree->setCurrentItem(word);
+        input->setText("存在しないテスト語"); // A new search clears the old details.
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(details->toPlainText().contains("候補を選ぶと"));
         settings.remove("display");
     }
     void displaySettings() {
@@ -995,6 +983,7 @@ private slots:
         action->trigger();
         QCOMPARE(window.font().pointSize(), 18);
         QCOMPARE(QToolTip::font().pointSize(), 18);
+        QCOMPARE(window.findChild<QTextBrowser *>("wordDetails")->font().pointSize(), 18);
         QCOMPARE(window.font().family(), chosenFamily);
         QCOMPARE(window.findChild<QLineEdit *>("searchInput")->font().pointSize(), 18);
         QCOMPARE(window.findChild<QListWidget *>("historyList")->font().pointSize(), 18);
@@ -1167,7 +1156,8 @@ private slots:
         QCOMPARE(pretty->data(0, Qt::UserRole).toString(), QString("綺麗"));
         tree->setCurrentItem(pretty);
         text = panel->toPlainText();
-        QVERIFY(text.startsWith("Wiktionary / Kaikki — 選択中の候補「綺麗」"));
+        QVERIFY(text.startsWith("Wiktionary / Kaikki\n"));
+        QVERIFY(!text.contains("選択中の候補"));
         QVERIFY(text.contains("整っていて美しい様。"));
         QVERIFY(!text.contains("うつくしい [adj]"));
         QCOMPARE(input->text(), QString("美しい"));
@@ -1176,8 +1166,7 @@ private slots:
         auto *noEntry = tree->topLevelItem(1)->child(0); // 麗しい: no Kaikki entry.
         tree->setCurrentItem(noEntry);
         QVERIFY(!panel->isHidden());
-        QVERIFY(panel->toPlainText().contains("選択中の候補「麗しい」"));
-        QVERIFY(panel->toPlainText().contains("この候補の項目はありません。"));
+        QVERIFY(panel->toPlainText().contains("「麗しい」の項目はありません。"));
         tree->setCurrentItem(tree->topLevelItem(0)); // A meaning heading: back to the search word.
         QVERIFY(panel->toPlainText().startsWith("Wiktionary / Kaikki\n"));
         QVERIFY(panel->toPlainText().contains("→ うつくしい の項目"));
@@ -1187,7 +1176,7 @@ private slots:
         input->setFocus();
         QTest::keyClick(input, Qt::Key_Down);
         QCOMPARE(tree->currentItem(), pretty);
-        QVERIFY(panel->toPlainText().contains("選択中の候補「綺麗」"));
+        QVERIFY(panel->toPlainText().contains("整っていて美しい様。"));
         // A new search starts from the search word's entries again.
         searchFor("美しい");
         QVERIFY(panel->toPlainText().startsWith("Wiktionary / Kaikki\n"));
@@ -1226,13 +1215,18 @@ private slots:
         QVERIFY(panel->isHidden());
         QVERIFY(heading->text().contains("見出しが見つかりませんでした"));
 
-        // The panel sits under the results in a vertical splitter and can be resized: the height the
-        // user drags to survives switching candidates, hiding/reappearing and a restart.
+        // The panel and the details share the bottom row under the results. The row height and
+        // the details width the user drags survive switching candidates, the Kaikki panel
+        // hiding/reappearing and a restart.
         auto *resultSplitter = window.findChild<QSplitter *>("resultSplitter");
-        QVERIFY(resultSplitter);
-        QCOMPARE(resultSplitter->indexOf(panel), 1);
+        auto *bottomSplitter = window.findChild<QSplitter *>("bottomSplitter");
+        auto *details = window.findChild<QTextBrowser *>("wordDetails");
+        QVERIFY(resultSplitter && bottomSplitter && details);
         QCOMPARE(resultSplitter->indexOf(tree), 0);
-        QVERIFY(panel->maximumHeight() > 1000); // No fixed cap any more.
+        QCOMPARE(resultSplitter->indexOf(bottomSplitter), 1);
+        QCOMPARE(bottomSplitter->indexOf(panel), 0);
+        QCOMPARE(bottomSplitter->indexOf(details), 1);
+        QVERIFY(bottomSplitter->maximumHeight() > 1000); // No fixed cap.
         window.resize(1000, 700);
         searchFor("美しい");
         QApplication::processEvents();
@@ -1241,27 +1235,41 @@ private slots:
         emit resultSplitter->splitterMoved(total - 260, 1); // As a user drag would report.
         const auto dragged = resultSplitter->sizes().value(1);
         QVERIFY(qAbs(dragged - 260) <= 2);
-        tree->setCurrentItem(tree->topLevelItem(0)->child(0)); // Switching keeps the height.
+        const auto width = bottomSplitter->sizes().value(0) + bottomSplitter->sizes().value(1);
+        bottomSplitter->setSizes({width - 300, 300});
+        emit bottomSplitter->splitterMoved(width - 300, 1);
+        const auto detailsWidth = bottomSplitter->sizes().value(1);
+        QVERIFY(qAbs(detailsWidth - 300) <= 2);
+        tree->setCurrentItem(tree->topLevelItem(0)->child(0)); // Switching keeps the sizes.
         QCOMPARE(resultSplitter->sizes().value(1), dragged);
+        QCOMPARE(bottomSplitter->sizes().value(1), detailsWidth);
         searchFor("どちらにもない語");
         QVERIFY(panel->isHidden());
-        searchFor("美しい"); // Reappears at the dragged height.
+        QVERIFY(details->isVisible()); // Shown even when the Kaikki panel is hidden.
+        QCOMPARE(resultSplitter->sizes().value(1), dragged);
+        searchFor("美しい"); // The panel reappears beside the details at the dragged width.
         QApplication::processEvents();
         QVERIFY(qAbs(resultSplitter->sizes().value(1) - dragged) <= 2);
+        QVERIFY(qAbs(bottomSplitter->sizes().value(1) - detailsWidth) <= 2);
         window.close();
         QCOMPARE(settings.value("window/kaikkiPanelHeight").toInt(), dragged);
+        QCOMPARE(settings.value("window/detailsPanelWidth").toInt(), detailsWidth);
         {
             MainWindow reopened(folder + "dictionary.sqlite");
             reopened.resize(1000, 700);
             reopened.show();
             QVERIFY(QTest::qWaitForWindowExposed(&reopened));
+            QApplication::processEvents();
+            QVERIFY(qAbs(reopened.findChild<QSplitter *>("resultSplitter")->sizes().value(1) - dragged) <= 2);
             auto *reopenedInput = reopened.findChild<QLineEdit *>("searchInput");
             reopenedInput->setText("美しい");
             QTest::keyClick(reopenedInput, Qt::Key_Return);
             QApplication::processEvents();
             QVERIFY(qAbs(reopened.findChild<QSplitter *>("resultSplitter")->sizes().value(1) - dragged) <= 2);
+            QVERIFY(qAbs(reopened.findChild<QSplitter *>("bottomSplitter")->sizes().value(1) - detailsWidth) <= 2);
         }
         settings.remove("window/kaikkiPanelHeight");
+        settings.remove("window/detailsPanelWidth");
 
         // Without kaikki.sqlite beside the WordNet DB, the panel never appears.
         MainWindow plain(fixture_);
@@ -1420,13 +1428,14 @@ private slots:
         QElapsedTimer displayTimer;
         displayTimer.start();
         QTest::keyClick(input, Qt::Key_Return);
-        qInfo("Search and result display (no tooltip queries): %.3f ms", displayTimer.nsecsElapsed() / 1000000.0);
+        qInfo("Search and result display (no details queries): %.3f ms", displayTimer.nsecsElapsed() / 1000000.0);
         QVERIFY(window.grab().save("preview.png"));
         if (QGuiApplication::platformName() != "offscreen" && QGuiApplication::platformName() != "minimal") {
             window.activateWindow();
             QVERIFY(QTest::qWaitForWindowActive(&window));
             auto *tree = window.findChild<QTreeWidget *>("results");
-            const auto checkTooltip = [&](const QString &search, const QString &candidate,
+            auto *details = window.findChild<QTextBrowser *>("wordDetails");
+            const auto checkDetails = [&](const QString &search, const QString &candidate,
                                           const QString &filename, bool missingDefinition) {
                 input->setText(search);
                 QTest::keyClick(input, Qt::Key_Return);
@@ -1444,29 +1453,17 @@ private slots:
                 }
                 QVERIFY(target);
                 QVERIFY(target->toolTip(0).isEmpty());
-                tree->scrollToItem(target);
-                QApplication::processEvents();
-                const auto point = tree->visualItemRect(target).center();
-                QHelpEvent event(QEvent::ToolTip, point, tree->viewport()->mapToGlobal(point));
-                QApplication::sendEvent(tree->viewport(), &event);
-                QTRY_VERIFY(QToolTip::isVisible());
-                if (candidate == "ビューティフル") QVERIFY(!QToolTip::text().contains("読み："));
-                if (missingDefinition) QVERIFY(QToolTip::text().contains("現在の意味</b><br>説明なし"));
-                bool captured = false;
-                for (auto *widget : QApplication::topLevelWidgets()) {
-                    if (widget->windowType() == Qt::ToolTip && widget->isVisible()) {
-                        QVERIFY(widget->width() < 500);
-                        captured = widget->grab().save(filename);
-                    }
-                }
-                QVERIFY(captured);
-                QToolTip::hideText();
+                tree->setCurrentItem(target);
+                QVERIFY(details->toPlainText().startsWith(target->text(0)));
+                if (candidate == "ビューティフル") QVERIFY(!details->toPlainText().contains("読み："));
+                if (missingDefinition) QVERIFY(details->toPlainText().contains("説明なし"));
+                QVERIFY(details->grab().save(filename));
             };
-            checkTooltip("美しい", "端麗", "tooltip-tanrei.png", false);
-            checkTooltip("美しい", "ビューティフル", "tooltip-kana.png", false);
-            checkTooltip("あいつ", "", "tooltip-missing.png", true);
-            checkTooltip("happy", "felicitous", "tooltip-english.png", false);
-            QVERIFY(!QToolTip::text().contains("読み："));
+            checkDetails("美しい", "端麗", "details-tanrei.png", false);
+            checkDetails("美しい", "ビューティフル", "details-kana.png", false);
+            checkDetails("あいつ", "", "details-missing.png", true);
+            checkDetails("happy", "felicitous", "details-english.png", false);
+            QVERIFY(!details->toPlainText().contains("読み："));
             QVERIFY(window.grab().save("preview-english.png"));
         }
         const QList<QPair<const char *, QString>> previews = {

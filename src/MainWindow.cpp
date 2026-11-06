@@ -11,7 +11,8 @@
 #include <QToolTip>
 #include <QHash>
 #include <QSet>
-#include <QHelpEvent>
+#include <QTextBrowser>
+#include <QTimer>
 #include <functional>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -247,7 +248,6 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     connect(spellingChoices_, &QListWidget::itemActivated, this, chooseSpelling);
     results_ = new QTreeWidget;
     results_->setObjectName("results");
-    results_->viewport()->installEventFilter(this);
     // Qt 6.8.2 does not invalidate QAccessibleTree's row cache on collapse.
     // Windows UI Automation can then traverse stale/cyclic sibling indexes.
     connect(results_, &QTreeWidget::itemCollapsed, this, [this] {
@@ -264,26 +264,45 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     copyAction->setShortcutContext(Qt::WidgetShortcut);
     results_->addAction(copyAction);
     connect(copyAction, &QAction::triggered, this, [this] { copyWord(results_->currentItem()); });
-    // Results and the Kaikki panel share a vertical splitter so the panel can be resized.
-    // The panel's height is kept separately (not saveState): the panel is often hidden,
-    // and a hidden pane would be restored with no height.
+    // Results sit above a bottom row (vertical splitter); the row holds the Kaikki panel
+    // and the always-visible details of the selected candidate (horizontal splitter).
+    // Sizes are kept separately (not saveState): the Kaikki panel is often hidden,
+    // and a hidden pane would be restored with no size.
     resultSplitter_ = new QSplitter(Qt::Vertical, right);
     resultSplitter_->setObjectName("resultSplitter");
     resultSplitter_->setChildrenCollapsible(false);
+    resultSplitter_->installEventFilter(this); // Applies the saved height once laid out.
     results_->setMinimumHeight(80);
     resultSplitter_->addWidget(results_);
+    bottomSplitter_ = new QSplitter(Qt::Horizontal);
+    bottomSplitter_->setObjectName("bottomSplitter");
+    bottomSplitter_->setChildrenCollapsible(false);
+    bottomSplitter_->setMinimumHeight(60);
     kaikkiPanel_ = new QPlainTextEdit;
     kaikkiPanel_->setObjectName("kaikkiSupplement");
     kaikkiPanel_->setAccessibleName(QStringLiteral("Wiktionary / Kaikki の補足"));
     kaikkiPanel_->setReadOnly(true);
-    kaikkiPanel_->setMinimumHeight(60);
+    kaikkiPanel_->setMinimumWidth(160);
     kaikkiPanel_->hide();
-    resultSplitter_->addWidget(kaikkiPanel_);
+    bottomSplitter_->addWidget(kaikkiPanel_);
+    detailsPanel_ = new QTextBrowser;
+    detailsPanel_->setObjectName("wordDetails");
+    detailsPanel_->setAccessibleName(QStringLiteral("選択中の候補の詳細"));
+    detailsPanel_->setOpenLinks(false);
+    detailsPanel_->setMinimumWidth(160);
+    bottomSplitter_->addWidget(detailsPanel_);
+    bottomSplitter_->setStretchFactor(0, 1);
+    bottomSplitter_->setStretchFactor(1, 0);
+    resultSplitter_->addWidget(bottomSplitter_);
     resultSplitter_->setStretchFactor(0, 1);
     resultSplitter_->setStretchFactor(1, 0);
-    kaikkiHeight_ = qBound(60, settings_.value("window/kaikkiPanelHeight", 180).toInt(), 2000);
+    bottomHeight_ = qBound(60, settings_.value("window/kaikkiPanelHeight", 180).toInt(), 2000);
+    detailsWidth_ = qBound(160, settings_.value("window/detailsPanelWidth", 360).toInt(), 2000);
     connect(resultSplitter_, &QSplitter::splitterMoved, this, [this] {
-        if (!kaikkiPanel_->isHidden()) kaikkiHeight_ = resultSplitter_->sizes().value(1, kaikkiHeight_);
+        bottomHeight_ = resultSplitter_->sizes().value(1, bottomHeight_);
+    });
+    connect(bottomSplitter_, &QSplitter::splitterMoved, this, [this] {
+        if (!kaikkiPanel_->isHidden()) detailsWidth_ = bottomSplitter_->sizes().value(1, detailsWidth_);
     });
     rightLayout->addWidget(resultSplitter_);
     auto *hint = new QLabel(QStringLiteral("類語候補をダブルクリック・Enter・Ctrl+Cでコピー ／ 検索欄で↓で候補へ移動 ／ 右クリックで操作"));
@@ -300,9 +319,9 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         [searchHistoryItem](QListWidgetItem *current, QListWidgetItem *) { searchHistoryItem(current); });
     connect(historyList_, &QListWidget::itemClicked, this, searchHistoryItem);
     connect(historyList_, &QListWidget::itemActivated, this, searchHistoryItem);
-    // Selecting a candidate (mouse or keyboard) switches the Kaikki panel to that word.
+    // Selecting a candidate (mouse or keyboard) switches the Kaikki panel and the details to that word.
     connect(results_, &QTreeWidget::currentItemChanged, this,
-        [this](QTreeWidgetItem *current, QTreeWidgetItem *) { showKaikkiFor(current); });
+        [this](QTreeWidgetItem *current, QTreeWidgetItem *) { showKaikkiFor(current); showDetailsFor(current); });
     connect(results_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *item) { copyWord(item); });
     connect(results_, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &point) {
         auto *item = results_->itemAt(point);
@@ -331,6 +350,7 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     const auto warning = kaikki_.open(QFileInfo(dictionaryPath).dir().filePath("kaikki.sqlite"));
     if (!warning.isEmpty()) statusBar()->showMessage(warning, 15000);
     applyDisplaySettings();
+    showDetailsFor(nullptr);
     input_->setFocus();
 }
 QFont MainWindow::displayFont() const {
@@ -504,8 +524,8 @@ void MainWindow::showKaikkiFor(QTreeWidgetItem *item) {
         if (item && item->parent()) {
             const auto word = item->data(0, Qt::UserRole).toString();
             const auto body = kaikkiText({word});
-            text = QStringLiteral("Wiktionary / Kaikki — 選択中の候補「%1」（意味の行を選ぶと検索語に戻ります）\n\n%2")
-                       .arg(word, body.isEmpty() ? QStringLiteral("この候補の項目はありません。") : body);
+            text = QStringLiteral("Wiktionary / Kaikki\n\n") + (body.isEmpty()
+                       ? QStringLiteral("「%1」の項目はありません。").arg(word) : body);
         } else if (!searchKaikki_.isEmpty()) {
             text = QStringLiteral("Wiktionary / Kaikki\n\n") + searchKaikki_;
         }
@@ -517,11 +537,46 @@ void MainWindow::showKaikkiFor(QTreeWidgetItem *item) {
     }
     kaikkiPanel_->setPlainText(text);
     if (kaikkiPanel_->isHidden()) {
-        // Reappearing: give it the height the user last chose (switching while visible keeps it).
+        // Reappearing: the details keep the width the user last chose (switching while visible keeps it).
         kaikkiPanel_->show();
-        const auto total = qMax(resultSplitter_->height(), kaikkiHeight_ + results_->minimumHeight());
-        resultSplitter_->setSizes({qMax(total - kaikkiHeight_, results_->minimumHeight()), kaikkiHeight_});
+        const auto total = qMax(bottomSplitter_->width(), detailsWidth_ + kaikkiPanel_->minimumWidth());
+        bottomSplitter_->setSizes({qMax(total - detailsWidth_, kaikkiPanel_->minimumWidth()), detailsWidth_});
     }
+}
+void MainWindow::applyBottomSizes() {
+    const auto total = qMax(resultSplitter_->height(), bottomHeight_ + results_->minimumHeight());
+    resultSplitter_->setSizes({qMax(total - bottomHeight_, results_->minimumHeight()), bottomHeight_});
+}
+void MainWindow::showDetailsFor(QTreeWidgetItem *item) {
+    // The selected candidate's reading and meanings; queried for this one word only.
+    const auto escape = [](const QString &text) {
+        return text.toHtmlEscaped().replace('\n', QStringLiteral("<br>"));
+    };
+    if (!item || !item->parent()) {
+        detailsPanel_->setHtml(QStringLiteral("<qt>%1</qt>").arg(escape(QStringLiteral("候補を選ぶと、読みと意味を表示します。"))));
+        return;
+    }
+    const auto word = item->data(0, Qt::UserRole).toString();
+    const auto details = repository_.wordDetails(word, language_, item->data(0, Qt::UserRole + 1).toString());
+    if (!details.error.isEmpty()) {
+        detailsPanel_->setHtml(QStringLiteral("<qt>詳細を取得できませんでした。<br>%1</qt>").arg(escape(details.error)));
+        return;
+    }
+    const auto definition = [&](const QString &text) {
+        return escape(text.trimmed().isEmpty() ? QStringLiteral("説明なし") : text);
+    };
+    QString html = QStringLiteral("<qt><b>%1</b>").arg(escape(word));
+    if (details.showReadings)
+        html += QStringLiteral("<br>読み：%1").arg(details.readings.isEmpty()
+            ? QStringLiteral("未収録") : escape(details.readings.join(QStringLiteral("／"))));
+    html += QStringLiteral("<p><b>現在の意味</b><br>%1</p><p><b>ほかに収録されている意味</b><br>")
+        .arg(definition(item->data(0, Qt::UserRole + 2).toString()));
+    QStringList others;
+    for (const auto &meaning : details.otherMeanings)
+        others.append(QStringLiteral("%1. %2").arg(others.size() + 1).arg(definition(meaning.definition)));
+    html += others.isEmpty() ? QStringLiteral("なし") : others.join(QStringLiteral("<br><br>"));
+    html += QStringLiteral("</p></qt>");
+    detailsPanel_->setHtml(html);
 }
 QString MainWindow::kaikkiText(const QStringList &words) const {
     const auto direct = kaikki_.search(words, language_);
@@ -602,12 +657,12 @@ void MainWindow::showChoices(const QStringList &headwords, const QStringList &hi
 void MainWindow::showResult() {
     const auto &result = lastResult_;
     const auto &word = lastWord_;
-    QToolTip::hideText();
     alternativeButton_->hide();
     formOfButton_->hide();
     spellingChoices_->hide();
     spellingChoices_->clear();
     results_->clear();
+    showDetailsFor(nullptr);
     if (word.isEmpty()) return;
     heading_->show();
     if (!result.error.isEmpty()) { heading_->setText(result.error); return; }
@@ -723,37 +778,13 @@ bool MainWindow::eventFilter(QObject *object, QEvent *event) {
         }
         return QMainWindow::eventFilter(object, event);
     }
-    if (object != results_->viewport() || event->type() != QEvent::ToolTip)
-        return QMainWindow::eventFilter(object, event);
-    auto *help = static_cast<QHelpEvent *>(event);
-    auto *item = results_->itemAt(help->pos());
-    if (!item || !item->parent())
-        return QMainWindow::eventFilter(object, event);
-    const auto word = item->data(0, Qt::UserRole).toString();
-    const auto details = repository_.wordDetails(word, language_, item->data(0, Qt::UserRole + 1).toString());
-    const auto escape = [](const QString &text) {
-        return text.toHtmlEscaped().replace('\n', QStringLiteral("<br>"));
-    };
-    const auto definition = [&](const QString &text) {
-        return escape(text.trimmed().isEmpty() ? QStringLiteral("説明なし") : text);
-    };
-    QString tooltip = QStringLiteral("<qt><table width='380'><tr><td><b>%1</b>").arg(escape(word));
-    if (details.showReadings)
-        tooltip += QStringLiteral("<br>読み：%1").arg(details.readings.isEmpty()
-            ? QStringLiteral("未収録") : escape(details.readings.join(QStringLiteral("／"))));
-    tooltip += QStringLiteral("<p><b>現在の意味</b><br>%1</p><p><b>ほかに収録されている意味</b><br>")
-        .arg(definition(item->data(0, Qt::UserRole + 2).toString()));
-    QStringList others;
-    for (const auto &meaning : details.otherMeanings)
-        others.append(QStringLiteral("%1. %2").arg(others.size() + 1).arg(definition(meaning.definition)));
-    tooltip += others.isEmpty() ? QStringLiteral("なし") : others.join(QStringLiteral("<br><br>"));
-    tooltip += QStringLiteral("</p></td></tr></table></qt>");
-    if (!details.error.isEmpty())
-        tooltip = QStringLiteral("<qt><table width='380'><tr><td>詳細を取得できませんでした。<br>%1</td></tr></table></qt>")
-            .arg(escape(details.error));
-    QToolTip::setFont(displayFont());
-    QToolTip::showText(help->globalPos(), tooltip, results_->viewport(), results_->visualItemRect(item));
-    return true;
+    // The saved bottom-row height needs the real splitter height, known after the first layout.
+    if (object == resultSplitter_ && event->type() == QEvent::Resize && !bottomSized_
+        && resultSplitter_->isVisible() && resultSplitter_->height() > 0) {
+        bottomSized_ = true;
+        QTimer::singleShot(0, this, [this] { applyBottomSizes(); });
+    }
+    return QMainWindow::eventFilter(object, event);
 }
 void MainWindow::copyWord(QTreeWidgetItem *item) {
     if (!item || !item->parent()) return;
@@ -764,7 +795,8 @@ void MainWindow::copyWord(QTreeWidgetItem *item) {
 void MainWindow::closeEvent(QCloseEvent *event) {
     settings_.setValue("window/geometry", saveGeometry());
     settings_.setValue("window/splitter", splitter_->saveState());
-    settings_.setValue("window/kaikkiPanelHeight", kaikkiHeight_);
+    settings_.setValue("window/kaikkiPanelHeight", bottomHeight_);
+    settings_.setValue("window/detailsPanelWidth", detailsWidth_);
     settings_.sync();
     QMainWindow::closeEvent(event);
 }

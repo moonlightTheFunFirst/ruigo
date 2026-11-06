@@ -12,6 +12,7 @@ class QPushButton;
 class QCheckBox;
 class QSplitter;
 class QPlainTextEdit;
+class QTextBrowser;
 class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(const QString &dictionaryPath, QWidget *parent = nullptr);
@@ -24,6 +25,8 @@ private:
     void updateKaikki();
     void showKaikkiFor(QTreeWidgetItem *item);
     QString kaikkiText(const QStringList &words) const;
+    void showDetailsFor(QTreeWidgetItem *item);
+    void applyBottomSizes();
     void showResult();
     void showChoices(const QStringList &headwords, const QStringList &hints,
                      const QVector<QVector<qint64>> &entries);
@@ -45,8 +48,12 @@ private:
     QString originalWord_;
     QString searchKaikki_; // Kaikki text for the search word; empty when there is none.
     QPlainTextEdit *kaikkiPanel_;
-    QSplitter *resultSplitter_;   // Results above, Kaikki panel below.
-    int kaikkiHeight_ = 180;      // Panel height last chosen by the user (window/kaikkiPanelHeight).
+    QTextBrowser *detailsPanel_;  // Reading and meanings of the selected candidate.
+    QSplitter *resultSplitter_;   // Results above, the bottom row below.
+    QSplitter *bottomSplitter_;   // Kaikki panel on the left, details on the right.
+    int bottomHeight_ = 180;      // Bottom row height chosen by the user (window/kaikkiPanelHeight).
+    int detailsWidth_ = 360;      // Details width chosen by the user (window/detailsPanelWidth).
+    bool bottomSized_ = false;    // The saved height is applied once the window is laid out.
     QPushButton *alternativeButton_;
     QPushButton *formOfButton_;
     QCheckBox *showRelatedCheck_;
