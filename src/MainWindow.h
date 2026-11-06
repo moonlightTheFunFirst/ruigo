@@ -13,6 +13,7 @@ public:
     explicit MainWindow(const QString &dictionaryPath, QWidget *parent = nullptr);
 protected:
     void closeEvent(QCloseEvent *event) override;
+    bool eventFilter(QObject *object, QEvent *event) override;
 private:
     void search(const QString &word);
     void refreshHistory();

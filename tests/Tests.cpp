@@ -22,6 +22,8 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTreeWidget>
+#include <QToolTip>
+#include <QHelpEvent>
 #include <QSplitter>
 #include <algorithm>
 
@@ -44,14 +46,22 @@ private slots:
             QSqlQuery q(db);
             const QStringList sql = {
                 "PRAGMA user_version=1",
-                "CREATE TABLE lemmas(id INTEGER PRIMARY KEY,word TEXT,language TEXT)",
+                "CREATE TABLE lemmas(id INTEGER PRIMARY KEY,word TEXT,language TEXT,forms_json TEXT DEFAULT '[]')",
                 "CREATE TABLE synsets(id TEXT PRIMARY KEY,source TEXT)",
                 "CREATE TABLE synset_definitions(synset_id TEXT,language TEXT,definition TEXT)",
                 "CREATE TABLE senses(synset_id TEXT,lemma_id INTEGER)",
-                "INSERT INTO lemmas VALUES (1,'美しい','ja'),(2,'綺麗','ja'),(3,'綺麗','ja'),(4,'麗しい','ja'),(5,'beautiful','en'),(6,'pretty','en')",
+                "INSERT INTO lemmas(id,word,language) VALUES (1,'美しい','ja'),(2,'綺麗','ja'),(3,'綺麗','ja'),(4,'麗しい','ja'),(5,'beautiful','en'),(6,'pretty','en')",
                 "INSERT INTO synsets VALUES ('s1','test'),('s2','test')",
                 "INSERT INTO senses VALUES ('s1',1),('s1',2),('s1',3),('s1',5),('s1',6),('s2',1),('s2',4)",
-                "INSERT INTO synset_definitions VALUES ('s1','ja','テスト用の意味'),('s1','en','English test definition')"
+                "INSERT INTO synset_definitions VALUES ('s1','ja','テスト用の意味'),('s1','en','English test definition')",
+                R"(UPDATE lemmas SET forms_json='[{"writtenForm":"キレイ","script":"kana"},{"writtenForm":"きれい","script":"hira"}]' WHERE id IN (2,3))",
+                "INSERT INTO synsets VALUES ('s3','test'),('s4','test'),('s5','test'),('s6','test')",
+                "INSERT INTO senses VALUES ('s3',2),('s3',3),('s4',2),('s6',2)",
+                "INSERT INTO synset_definitions VALUES ('s3','ja','別の意味 <テスト> & 確認'),('s3','en','Do not display this')",
+                // Unrelated homograph must not leak its reading/meaning into s1.
+                R"(INSERT INTO lemmas VALUES (7,'綺麗','ja','[{"writtenForm":"べつよみ","script":"hira"}]'))",
+                "INSERT INTO senses VALUES ('s5',7)",
+                "INSERT INTO synset_definitions VALUES ('s5','ja','別の同形異義語')"
             };
             for (const auto &statement : sql) QVERIFY(q.exec(statement));
             q.finish();
@@ -116,6 +126,24 @@ private slots:
         QVERIFY(!history.words("ja").contains("108"));
         QCOMPARE(history.words("ja").size(), 99);
     }
+    void wordDetails() {
+        DictionaryRepository repository;
+        QVERIFY(repository.open(fixture_));
+        const auto details = repository.wordDetails("綺麗", "ja", "s1");
+        QVERIFY(details.error.isEmpty());
+        QCOMPARE(details.readings, QStringList{"きれい"});
+        QCOMPARE(details.otherMeanings.size(), 3);
+        QCOMPARE(details.otherMeanings[0].definition, QString("別の意味 <テスト> & 確認"));
+        QCOMPARE(details.otherMeanings[1].id, QString("s4"));
+        QCOMPARE(details.otherMeanings[2].id, QString("s6"));
+        QVERIFY(details.otherMeanings[1].definition.isEmpty());
+        QVERIFY(details.otherMeanings[2].definition.isEmpty());
+        const auto missing = repository.wordDetails("麗しい", "ja", "s2");
+        QVERIFY(missing.readings.isEmpty());
+        QVERIFY(missing.otherMeanings.isEmpty());
+        QVERIFY(repository.wordDetails("綺麗", "en", "s1").readings.isEmpty());
+        QVERIFY(repository.wordDetails("' OR 1=1 --", "ja", "s1").otherMeanings.isEmpty());
+    }
     void ui() {
         MainWindow window(fixture_);
         window.show();
@@ -128,6 +156,7 @@ private slots:
         QTest::keyClick(input, Qt::Key_Return);
         QCOMPARE(tree->topLevelItemCount(), 2);
         auto *word = tree->topLevelItem(0)->child(0);
+        QVERIFY(word->toolTip(0).isEmpty()); // Details are loaded only on hover.
         tree->scrollToItem(word);
         QApplication::processEvents();
         QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, tree->visualItemRect(word).center());
@@ -204,6 +233,60 @@ private slots:
         MainWindow missing(temporary_.filePath("missing.sqlite"));
         QVERIFY(missing.findChild<QLabel *>("resultHeading")->text().contains("見つかりません"));
     }
+    void tooltips() {
+        if (QGuiApplication::platformName() == "offscreen" || QGuiApplication::platformName() == "minimal")
+            QSKIP("Tooltip window visibility requires a desktop");
+        QSettings settings;
+        settings.setValue("display/fontFamily", QFontDatabase::systemFont(QFontDatabase::GeneralFont).family());
+        settings.setValue("display/fontSize", 18);
+        MainWindow window(fixture_);
+        window.show();
+        window.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&window));
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *tree = window.findChild<QTreeWidget *>("results");
+        input->setText("美しい");
+        QTest::keyClick(input, Qt::Key_Return);
+        auto *word = tree->topLevelItem(0)->child(0);
+        QVERIFY(word->toolTip(0).isEmpty());
+        const auto hover = [&](QTreeWidgetItem *item) {
+            tree->scrollToItem(item);
+            QApplication::processEvents();
+            const auto point = tree->visualItemRect(item).center();
+            QHelpEvent event(QEvent::ToolTip, point, tree->viewport()->mapToGlobal(point));
+            QApplication::sendEvent(tree->viewport(), &event);
+        };
+        hover(word);
+        QTRY_VERIFY(QToolTip::isVisible());
+        const auto text = QToolTip::text();
+        QVERIFY(text.contains("読み：きれい"));
+        QVERIFY(text.contains("現在の意味</b><br>テスト用の意味"));
+        QVERIFY(text.contains("別の意味 &lt;テスト&gt; &amp; 確認"));
+        QVERIFY(text.contains("2. 説明なし"));
+        QVERIFY(text.contains("3. 説明なし"));
+        QVERIFY(!text.contains("べつよみ"));
+        QVERIFY(!text.contains("Do not display"));
+        hover(word);
+        QCOMPARE(QToolTip::text(), text);
+        hover(tree->topLevelItem(1)->child(0));
+        QVERIFY(QToolTip::text().contains("読み：未収録"));
+        QVERIFY(QToolTip::text().contains("現在の意味</b><br>説明なし"));
+        QVERIFY(QToolTip::text().contains("ほかに収録されている意味</b><br>なし"));
+        // A long definition must wrap within the supported fixed-width table.
+        word->setData(0, Qt::UserRole + 2, QStringLiteral("これは長い定義の折り返しを確認するテストです。").repeated(6));
+        hover(word);
+        QTRY_VERIFY(QToolTip::isVisible());
+        for (auto *widget : QApplication::topLevelWidgets()) {
+            if (widget->windowType() == Qt::ToolTip && widget->isVisible()) {
+                QVERIFY(widget->width() < 500);
+                QCOMPARE(QToolTip::font().pointSize(), 18);
+                QVERIFY(widget->grab().save("tooltip-long.png"));
+            }
+        }
+        QToolTip::hideText();
+        window.close();
+        settings.remove("display");
+    }
     void displaySettings() {
         QSettings settings;
         settings.remove("display");
@@ -238,6 +321,7 @@ private slots:
         });
         action->trigger();
         QCOMPARE(window.font().pointSize(), 18);
+        QCOMPARE(QToolTip::font().pointSize(), 18);
         QCOMPARE(window.font().family(), chosenFamily);
         QCOMPARE(window.findChild<QLineEdit *>("searchInput")->font().pointSize(), 18);
         QCOMPARE(window.findChild<QListWidget *>("historyList")->font().pointSize(), 18);
@@ -277,13 +361,66 @@ private slots:
         std::sort(durations.begin(), durations.end());
         qInfo("Real dictionary search median: %.3f ms", durations[50] / 1000000.0);
         QVERIFY(repository.search("beautiful", "en").groups.isEmpty());
+        const auto shurei = repository.wordDetails("秀麗", "ja", "wnja:2.1:wnja-00217728-a");
+        QCOMPARE(shurei.readings, QStringList{"しゅうれい"});
+        QVERIFY(shurei.otherMeanings.isEmpty());
+        const auto tanrei = repository.wordDetails("端麗", "ja", "wnja:2.1:wnja-00217728-a");
+        QCOMPARE(tanrei.readings, QStringList{"たんれい"});
+        QCOMPARE(tanrei.otherMeanings.size(), 2);
         MainWindow window(path);
         window.show();
         QVERIFY(QTest::qWaitForWindowExposed(&window));
         auto *input = window.findChild<QLineEdit *>("searchInput");
         input->setText(QStringLiteral("美しい"));
+        QElapsedTimer displayTimer;
+        displayTimer.start();
         QTest::keyClick(input, Qt::Key_Return);
+        qInfo("Search and result display (no tooltip queries): %.3f ms", displayTimer.nsecsElapsed() / 1000000.0);
         QVERIFY(window.grab().save("preview.png"));
+        if (QGuiApplication::platformName() != "offscreen" && QGuiApplication::platformName() != "minimal") {
+            window.activateWindow();
+            QVERIFY(QTest::qWaitForWindowActive(&window));
+            auto *tree = window.findChild<QTreeWidget *>("results");
+            const auto checkTooltip = [&](const QString &search, const QString &candidate,
+                                          const QString &filename, bool missingDefinition) {
+                input->setText(search);
+                QTest::keyClick(input, Qt::Key_Return);
+                QTreeWidgetItem *target = nullptr;
+                for (int i = 0; i < tree->topLevelItemCount() && !target; ++i) {
+                    auto *group = tree->topLevelItem(i);
+                    for (int j = 0; j < group->childCount(); ++j) {
+                        auto *item = group->child(j);
+                        if ((!candidate.isEmpty() && item->text(0) == candidate) ||
+                            (missingDefinition && item->data(0, Qt::UserRole + 2).toString().isEmpty())) {
+                            target = item;
+                            break;
+                        }
+                    }
+                }
+                QVERIFY(target);
+                QVERIFY(target->toolTip(0).isEmpty());
+                tree->scrollToItem(target);
+                QApplication::processEvents();
+                const auto point = tree->visualItemRect(target).center();
+                QHelpEvent event(QEvent::ToolTip, point, tree->viewport()->mapToGlobal(point));
+                QApplication::sendEvent(tree->viewport(), &event);
+                QTRY_VERIFY(QToolTip::isVisible());
+                if (candidate == "ビューティフル") QVERIFY(!QToolTip::text().contains("読み："));
+                if (missingDefinition) QVERIFY(QToolTip::text().contains("現在の意味</b><br>説明なし"));
+                bool captured = false;
+                for (auto *widget : QApplication::topLevelWidgets()) {
+                    if (widget->windowType() == Qt::ToolTip && widget->isVisible()) {
+                        QVERIFY(widget->width() < 500);
+                        captured = widget->grab().save(filename);
+                    }
+                }
+                QVERIFY(captured);
+                QToolTip::hideText();
+            };
+            checkTooltip("美しい", "端麗", "tooltip-tanrei.png", false);
+            checkTooltip("美しい", "ビューティフル", "tooltip-kana.png", false);
+            checkTooltip("あいつ", "", "tooltip-missing.png", true);
+        }
         window.close();
     }
 };

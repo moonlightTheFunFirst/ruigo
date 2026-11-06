@@ -8,6 +8,7 @@
 #include <QKeyEvent>
 #include <QFocusEvent>
 #include <QToolTip>
+#include <QHelpEvent>
 #include <functional>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -162,6 +163,7 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     heading_->hide();
     results_ = new QTreeWidget;
     results_->setObjectName("results");
+    results_->viewport()->installEventFilter(this);
     results_->setHeaderHidden(true);
     results_->setWordWrap(true);
     results_->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -223,6 +225,7 @@ QFont MainWindow::displayFont() const {
 }
 void MainWindow::applyDisplaySettings() {
     setFont(displayFont());
+    QToolTip::setFont(displayFont());
     auto colors = QApplication::palette();
     const bool dark = colors.color(QPalette::Base).lightness() < 128;
     const QColor text(dark ? "#d2d2d2" : "#303030");
@@ -355,9 +358,58 @@ void MainWindow::search(const QString &input) {
         for (const auto &candidate : group.words) {
             auto *item = new QTreeWidgetItem(parent, {candidate});
             item->setData(0, Qt::UserRole, candidate);
+            item->setData(0, Qt::UserRole + 1, group.id);
+            item->setData(0, Qt::UserRole + 2, group.definition);
         }
         parent->setExpanded(true);
     }
+}
+bool MainWindow::eventFilter(QObject *object, QEvent *event) {
+    if (object != results_->viewport() || event->type() != QEvent::ToolTip)
+        return QMainWindow::eventFilter(object, event);
+    auto *help = static_cast<QHelpEvent *>(event);
+    auto *item = results_->itemAt(help->pos());
+    if (!item || !item->parent())
+        return QMainWindow::eventFilter(object, event);
+    const auto word = item->data(0, Qt::UserRole).toString();
+    const auto details = repository_.wordDetails(word, language_, item->data(0, Qt::UserRole + 1).toString());
+    const auto escape = [](const QString &text) {
+        return text.toHtmlEscaped().replace('\n', QStringLiteral("<br>"));
+    };
+    const auto definition = [&](const QString &text) {
+        return escape(text.trimmed().isEmpty() ? QStringLiteral("説明なし") : text);
+    };
+    // Compare only kana spellings; do not infer any missing pronunciation.
+    const auto kana = [](QString text) {
+        text = text.normalized(QString::NormalizationForm_KC);
+        for (auto &ch : text)
+            if (ch.unicode() >= 0x30a1 && ch.unicode() <= 0x30f6)
+                ch = QChar(ch.unicode() - 0x60);
+        return text;
+    };
+    bool redundantReading = !details.readings.isEmpty();
+    for (const auto &ch : kana(word))
+        if (!(ch.unicode() >= 0x3041 && ch.unicode() <= 0x3096) && ch != QChar(0x30fc))
+            redundantReading = false;
+    for (const auto &reading : details.readings)
+        if (kana(reading) != kana(word)) redundantReading = false;
+    QString tooltip = QStringLiteral("<qt><table width='380'><tr><td><b>%1</b>").arg(escape(word));
+    if (!redundantReading)
+        tooltip += QStringLiteral("<br>読み：%1").arg(details.readings.isEmpty()
+            ? QStringLiteral("未収録") : escape(details.readings.join(QStringLiteral("／"))));
+    tooltip += QStringLiteral("<p><b>現在の意味</b><br>%1</p><p><b>ほかに収録されている意味</b><br>")
+        .arg(definition(item->data(0, Qt::UserRole + 2).toString()));
+    QStringList others;
+    for (const auto &meaning : details.otherMeanings)
+        others.append(QStringLiteral("%1. %2").arg(others.size() + 1).arg(definition(meaning.definition)));
+    tooltip += others.isEmpty() ? QStringLiteral("なし") : others.join(QStringLiteral("<br><br>"));
+    tooltip += QStringLiteral("</p></td></tr></table></qt>");
+    if (!details.error.isEmpty())
+        tooltip = QStringLiteral("<qt><table width='380'><tr><td>詳細を取得できませんでした。<br>%1</td></tr></table></qt>")
+            .arg(escape(details.error));
+    QToolTip::setFont(displayFont());
+    QToolTip::showText(help->globalPos(), tooltip, results_->viewport(), results_->visualItemRect(item));
+    return true;
 }
 void MainWindow::copyWord(QTreeWidgetItem *item) {
     if (!item || !item->parent()) return;

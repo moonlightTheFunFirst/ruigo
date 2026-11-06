@@ -13,6 +13,15 @@ struct SearchResult {
     QString error;
     int candidateCount() const;
 };
+struct WordMeaning {
+    QString id;
+    QString definition;
+};
+struct WordDetails {
+    QStringList readings;
+    QVector<WordMeaning> otherMeanings;
+    QString error;
+};
 class DictionaryRepository {
 public:
     DictionaryRepository();
@@ -22,6 +31,8 @@ public:
     bool open(const QString &path);
     QString error() const { return error_; }
     SearchResult search(const QString &word, const QString &language) const;
+    WordDetails wordDetails(const QString &word, const QString &language,
+                            const QString &currentSynset) const;
 private:
     QSqlDatabase db_;
     QString error_;

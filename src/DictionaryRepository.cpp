@@ -4,6 +4,9 @@
 #include <QSqlError>
 #include <QUuid>
 #include <QVariant>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 int SearchResult::candidateCount() const {
     int count = 0;
@@ -34,7 +37,7 @@ bool DictionaryRepository::open(const QString &path) {
     QSqlQuery check(db_);
     if (!check.exec("PRAGMA user_version") || !check.next() || check.value(0).toInt() != 1) {
         error_ = QStringLiteral("辞書DBの形式が未対応、または破損しています。");
-    } else if (!check.exec("SELECT l.word,l.language,s.id,s.source,d.definition,d.language,se.lemma_id "
+    } else if (!check.exec("SELECT l.word,l.language,l.forms_json,s.id,s.source,d.definition,d.language,se.lemma_id "
                            "FROM lemmas l JOIN senses se ON se.lemma_id=l.id "
                            "JOIN synsets s ON s.id=se.synset_id "
                            "LEFT JOIN synset_definitions d ON d.synset_id=s.id LIMIT 0")) {
@@ -78,5 +81,52 @@ SearchResult DictionaryRepository::search(const QString &input, const QString &l
         result.groups.clear();
         result.error = query.lastError().text();
     }
+    return result;
+}
+WordDetails DictionaryRepository::wordDetails(const QString &word, const QString &language,
+                                               const QString &currentSynset) const {
+    WordDetails result;
+    if (!db_.isOpen()) {
+        result.error = error_.isEmpty() ? QStringLiteral("辞書DBが開かれていません。") : error_;
+        return result;
+    }
+    QSqlQuery query(db_);
+    // Keep readings and other senses tied to entries belonging to this meaning,
+    // rather than mixing unrelated homographs with the same spelling.
+    query.prepare("SELECT DISTINCT l.forms_json, s.synset_id, COALESCE(d.definition,'') "
+        "FROM lemmas l JOIN senses s ON s.lemma_id=l.id "
+        "LEFT JOIN synset_definitions d ON d.synset_id=s.synset_id AND d.language=:language "
+        "WHERE l.word=:word AND l.language=:language "
+        "AND EXISTS (SELECT 1 FROM senses current WHERE current.lemma_id=l.id "
+        "AND current.synset_id=:current) ORDER BY s.synset_id,l.id");
+    query.bindValue(":word", word);
+    query.bindValue(":language", language);
+    query.bindValue(":current", currentSynset);
+    if (!query.exec()) {
+        result.error = query.lastError().text();
+        return result;
+    }
+    while (query.next()) {
+        QStringList hiragana, katakana;
+        const auto forms = QJsonDocument::fromJson(query.value(0).toString().toUtf8()).array();
+        for (const auto &form : forms) {
+            const auto object = form.toObject();
+            const auto reading = object.value("writtenForm").toString().trimmed();
+            if (reading.isEmpty()) continue;
+            const auto script = object.value("script").toString();
+            if (script == "hira") hiragana.append(reading);
+            else if (script == "kana") katakana.append(reading);
+        }
+        const auto readings = hiragana.isEmpty() ? katakana : hiragana;
+        for (const auto &reading : readings)
+            if (!result.readings.contains(reading)) result.readings.append(reading);
+        if (query.value(1).toString() != currentSynset) {
+            const auto definition = query.value(2).toString().trimmed();
+            const auto id = query.value(1).toString();
+            if (result.otherMeanings.isEmpty() || result.otherMeanings.last().id != id)
+                result.otherMeanings.append({id, definition});
+        }
+    }
+    if (query.lastError().isValid()) result.error = query.lastError().text();
     return result;
 }
