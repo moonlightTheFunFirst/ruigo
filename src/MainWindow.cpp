@@ -9,6 +9,8 @@
 #include <QKeyEvent>
 #include <QFocusEvent>
 #include <QToolTip>
+#include <QHash>
+#include <QSet>
 #include <QHelpEvent>
 #include <functional>
 #include <QDialog>
@@ -31,8 +33,11 @@
 #include <QVBoxLayout>
 
 namespace {
-QString historyLabel(const QString &word, const QString &language) {
-    return language == "en" ? word + QStringLiteral("  [英語]") : word;
+// The language is normally obvious from the word itself, so it is shown only
+// when the same spelling is saved in both languages (e.g. "AI" after using
+// the other-language button) and the two rows would otherwise look identical.
+QString historyLabel(const QString &word, const QString &language, bool sameSpellingInOtherLanguage) {
+    return sameSpellingInOtherLanguage && language == "en" ? word + QStringLiteral("  [英語]") : word;
 }
 class HistoryEditorDelegate : public QStyledItemDelegate {
 public:
@@ -58,7 +63,7 @@ public:
         const auto language = language_(index.row());
         model->setData(index, language, Qt::UserRole);
         model->setData(index, word, Qt::UserRole + 1);
-        model->setData(index, historyLabel(word, language), Qt::EditRole);
+        model->setData(index, word, Qt::EditRole); // Labels are refreshed after the commit.
     }
     bool eventFilter(QObject *object, QEvent *event) override {
         auto *editor = qobject_cast<QLineEdit *>(object);
@@ -149,7 +154,9 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         return error;
     }, [this](int row) { return history_.entries().at(row).language; }, [this](const QString &word) {
         const auto *item = historyList_->currentItem();
-        if (item) search(word, item->data(Qt::UserRole).toString());
+        const auto language = item ? item->data(Qt::UserRole).toString() : QString();
+        refreshHistory(); // An edit can create or remove a same-spelling pair.
+        if (!language.isEmpty()) search(word, language);
     }));
     historyList_->setEditTriggers(QAbstractItemView::DoubleClicked);
     historyList_->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -365,8 +372,12 @@ void MainWindow::refreshHistory() {
     const auto selectedWord = selected ? selected->data(Qt::UserRole + 1).toString() : QString();
     const auto selectedLanguage = selected ? selected->data(Qt::UserRole).toString() : QString();
     historyList_->clear();
-    for (const auto &entry : history_.entries()) {
-        auto *item = new QListWidgetItem(historyLabel(entry.word, entry.language), historyList_);
+    const auto entries = history_.entries();
+    QHash<QString, QSet<QString>> languagesByWord;
+    for (const auto &entry : entries) languagesByWord[entry.word].insert(entry.language);
+    for (const auto &entry : entries) {
+        const bool sameSpelling = languagesByWord.value(entry.word).size() > 1;
+        auto *item = new QListWidgetItem(historyLabel(entry.word, entry.language, sameSpelling), historyList_);
         item->setData(Qt::UserRole, entry.language);
         item->setData(Qt::UserRole + 1, entry.word);
         if (entry.word == selectedWord && entry.language == selectedLanguage) historyList_->setCurrentItem(item);
@@ -386,6 +397,7 @@ void MainWindow::deleteHistory() {
     QSignalBlocker blocker(historyList_);
     delete historyList_->takeItem(historyList_->row(item));
     historyList_->setCurrentRow(-1);
+    refreshHistory(); // The remaining same-spelling row may no longer need its label.
 }
 void MainWindow::search(const QString &input, const QString &requestedLanguage, bool record) {
     const auto word = input.trimmed();

@@ -318,6 +318,20 @@ private slots:
         QCOMPARE(history->item(0)->data(Qt::UserRole).toString(), QString("en"));
         QCOMPARE(history->item(0)->data(Qt::UserRole + 1).toString(), QString("beautiful"));
         QVERIFY(!button->isVisible());
+        // English entries carry no label unless the same spelling is also saved in Japanese.
+        QCOMPARE(history->item(0)->text(), QString("beautiful"));
+        QCOMPARE(history->item(1)->text(), QString("AI"));
+        QCOMPARE(history->item(1)->data(Qt::UserRole).toString(), QString("en"));
+        input->setText("AI");
+        QTest::keyClick(input, Qt::Key_Return);
+        button->click(); // Saves ja:AI again, so the English row needs its label.
+        QCOMPARE(history->item(0)->text(), QString("AI"));
+        QCOMPARE(history->item(2)->text(), QString("AI  [英語]"));
+        history->setCurrentRow(0);
+        history->setFocus();
+        QTest::keyClick(history, Qt::Key_Delete);
+        QCOMPARE(history->count(), 2);
+        QCOMPARE(history->item(1)->text(), QString("AI")); // Label removed with the pair.
         window.close();
         settings.setValue("history/entries", QStringList{});
     }
