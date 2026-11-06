@@ -1124,6 +1124,9 @@ private slots:
                 R"((8,7,1,'["美しい。"]','ja'))",
                 "INSERT INTO spelling_references VALUES (1,2),(4,4),(4,5)",
                 "INSERT INTO relations(entry_id,sense_id,kind,target_word,target_language) VALUES (6,7,'synonym','試験語','ja')",
+                // 綺麗 is a WordNet candidate of 美しい; 麗しい (the other candidate) has no Kaikki entry.
+                "INSERT INTO entries(id,source_line,word,language,pos) VALUES (8,8,'綺麗','ja','adj')",
+                R"(INSERT INTO senses VALUES (9,8,1,'["整っていて美しい様。"]','ja'))",
             };
             for (const auto &statement : sql)
                 QVERIFY2(q.exec(statement), qPrintable(statement + "\n" + q.lastError().text()));
@@ -1154,6 +1157,40 @@ private slots:
         QCOMPARE(text.count("見て感動を与える様。"), 1);
         QVERIFY(!text.contains("[日本語] \n") && !text.endsWith("[日本語] "));
         QVERIFY(!heading->text().contains("WordNetには見出しがありません")); // WordNet has 美しい.
+
+        // Selecting a candidate switches the panel to that word, without searching again
+        // or touching history; a meaning heading goes back to the search word.
+        auto *tree = window.findChild<QTreeWidget *>("results");
+        auto *history = window.findChild<QListWidget *>("historyList");
+        const auto historyCount = history->count();
+        auto *pretty = tree->topLevelItem(0)->child(0);
+        QCOMPARE(pretty->data(0, Qt::UserRole).toString(), QString("綺麗"));
+        tree->setCurrentItem(pretty);
+        text = panel->toPlainText();
+        QVERIFY(text.startsWith("Wiktionary / Kaikki — 選択中の候補「綺麗」"));
+        QVERIFY(text.contains("整っていて美しい様。"));
+        QVERIFY(!text.contains("うつくしい [adj]"));
+        QCOMPARE(input->text(), QString("美しい"));
+        QCOMPARE(history->count(), historyCount);
+        QVERIFY(heading->text().contains("「美しい」の類語候補"));
+        auto *noEntry = tree->topLevelItem(1)->child(0); // 麗しい: no Kaikki entry.
+        tree->setCurrentItem(noEntry);
+        QVERIFY(!panel->isHidden());
+        QVERIFY(panel->toPlainText().contains("選択中の候補「麗しい」"));
+        QVERIFY(panel->toPlainText().contains("この候補の項目はありません。"));
+        tree->setCurrentItem(tree->topLevelItem(0)); // A meaning heading: back to the search word.
+        QVERIFY(panel->toPlainText().startsWith("Wiktionary / Kaikki\n"));
+        QVERIFY(panel->toPlainText().contains("→ うつくしい の項目"));
+        // Keyboard: Down from the search box selects the first candidate, which updates the panel too.
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        input->setFocus();
+        QTest::keyClick(input, Qt::Key_Down);
+        QCOMPARE(tree->currentItem(), pretty);
+        QVERIFY(panel->toPlainText().contains("選択中の候補「綺麗」"));
+        // A new search starts from the search word's entries again.
+        searchFor("美しい");
+        QVERIFY(panel->toPlainText().startsWith("Wiktionary / Kaikki\n"));
 
         // Kana input resolved by WordNet to 美しい: うつくしい is reached directly and through
         // 美しい's reference, but is shown once (deduplicated by entry id) with both routes.
@@ -1194,6 +1231,9 @@ private slots:
         auto *plainInput = plain.findChild<QLineEdit *>("searchInput");
         plainInput->setText("美しい");
         QTest::keyClick(plainInput, Qt::Key_Return);
+        QVERIFY(plain.findChild<QPlainTextEdit *>("kaikkiSupplement")->isHidden());
+        auto *plainTree = plain.findChild<QTreeWidget *>("results");
+        plainTree->setCurrentItem(plainTree->topLevelItem(0)->child(0)); // Selecting does not show it either.
         QVERIFY(plain.findChild<QPlainTextEdit *>("kaikkiSupplement")->isHidden());
         settings.setValue("history/entries", QStringList{});
     }

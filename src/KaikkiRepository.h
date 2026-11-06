@@ -25,6 +25,7 @@ public:
     KaikkiRepository(const KaikkiRepository &) = delete;
     KaikkiRepository &operator=(const KaikkiRepository &) = delete;
     QString open(const QString &path);
+    bool isOpen() const { return db_.isOpen(); }
     QVector<KaikkiEntry> search(const QStringList &words, const QString &language) const;
     KaikkiEntry entry(qint64 id, const QString &language) const;
 private:

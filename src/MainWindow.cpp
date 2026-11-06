@@ -286,6 +286,9 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         [searchHistoryItem](QListWidgetItem *current, QListWidgetItem *) { searchHistoryItem(current); });
     connect(historyList_, &QListWidget::itemClicked, this, searchHistoryItem);
     connect(historyList_, &QListWidget::itemActivated, this, searchHistoryItem);
+    // Selecting a candidate (mouse or keyboard) switches the Kaikki panel to that word.
+    connect(results_, &QTreeWidget::currentItemChanged, this,
+        [this](QTreeWidgetItem *current, QTreeWidgetItem *) { showKaikkiFor(current); });
     connect(results_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *item) { copyWord(item); });
     connect(results_, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &point) {
         auto *item = results_->itemAt(point);
@@ -470,11 +473,35 @@ void MainWindow::search(const QString &input, const QString &requestedLanguage, 
 }
 
 void MainWindow::updateKaikki() {
+    // The search word's entries (input, searched headword, WordNet's matched headwords).
+    searchKaikki_.clear();
+    if (lastResult_.error.isEmpty()) {
+        QStringList words{originalWord_, lastWord_};
+        words.append(lastResult_.matchedWords);
+        searchKaikki_ = kaikkiText(words);
+    }
+    showKaikkiFor(nullptr);
+}
+void MainWindow::showKaikkiFor(QTreeWidgetItem *item) {
+    // A selected candidate shows its own Kaikki entries; a meaning heading or no
+    // selection shows the search word's. Nothing is searched again or recorded.
     kaikkiPanel_->clear();
     kaikkiPanel_->hide();
-    if (!lastResult_.error.isEmpty()) return;
-    QStringList words{originalWord_, lastWord_};
-    words.append(lastResult_.matchedWords);
+    if (!kaikki_.isOpen()) return;
+    if (item && item->parent()) {
+        const auto word = item->data(0, Qt::UserRole).toString();
+        const auto body = kaikkiText({word});
+        kaikkiPanel_->setPlainText(
+            QStringLiteral("Wiktionary / Kaikki — 選択中の候補「%1」（意味の行を選ぶと検索語に戻ります）\n\n%2")
+                .arg(word, body.isEmpty() ? QStringLiteral("この候補の項目はありません。") : body));
+        kaikkiPanel_->show();
+        return;
+    }
+    if (searchKaikki_.isEmpty()) return;
+    kaikkiPanel_->setPlainText(QStringLiteral("Wiktionary / Kaikki\n\n") + searchKaikki_);
+    kaikkiPanel_->show();
+}
+QString MainWindow::kaikkiText(const QStringList &words) const {
     const auto direct = kaikki_.search(words, language_);
     QHash<qint64, QStringList> paths;
     QHash<qint64, KaikkiEntry> targets;
@@ -529,10 +556,7 @@ void MainWindow::updateKaikki() {
     };
     for (const auto &entry : direct) appendEntry(entry, true);
     for (const auto &entry : additional) appendEntry(entry, false);
-    if (!sections.isEmpty()) {
-        kaikkiPanel_->setPlainText(QStringLiteral("Wiktionary / Kaikki\n\n") + sections.join("\n\n"));
-        kaikkiPanel_->show();
-    }
+    return sections.join("\n\n");
 }
 void MainWindow::showChoices(const QStringList &headwords, const QStringList &hints,
                              const QVector<QVector<qint64>> &entries) {
@@ -610,7 +634,7 @@ void MainWindow::showResult() {
         return;
     }
     if (!result.found) {
-        heading_->setText(heading_->text() + (kaikkiPanel_->isHidden()
+        heading_->setText(heading_->text() + (searchKaikki_.isEmpty()
             ? QStringLiteral("\n見出しが見つかりませんでした")
             : QStringLiteral("\nWordNetには見出しがありません")));
         return;

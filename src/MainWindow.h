@@ -22,6 +22,8 @@ private:
     void search(const QString &word, const QString &language = {}, bool record = false,
                 const QVector<qint64> &entries = {}, const QString &originalInput = {});
     void updateKaikki();
+    void showKaikkiFor(QTreeWidgetItem *item);
+    QString kaikkiText(const QStringList &words) const;
     void showResult();
     void showChoices(const QStringList &headwords, const QStringList &hints,
                      const QVector<QVector<qint64>> &entries);
@@ -41,6 +43,7 @@ private:
     SearchResult lastResult_;
     QString lastWord_;
     QString originalWord_;
+    QString searchKaikki_; // Kaikki text for the search word; empty when there is none.
     QPlainTextEdit *kaikkiPanel_;
     QPushButton *alternativeButton_;
     QPushButton *formOfButton_;
