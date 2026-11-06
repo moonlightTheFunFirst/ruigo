@@ -2,8 +2,12 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QIcon>
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
+#ifdef Q_OS_WIN
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/ruigo.ico")));
+#endif
     QCoreApplication::setOrganizationName("Keishin");
     QCoreApplication::setOrganizationDomain("keishin.jp");
     QCoreApplication::setApplicationName("Ruigo");

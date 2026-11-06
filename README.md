@@ -65,6 +65,11 @@ python3 -m venv .venv
 
 ## Windowsビルド・起動
 
+Windowsの実行ファイル・ウィンドウアイコンは`assets/ruigo.ico`を埋め込みます。
+採用した元画像は`assets/ruigo.png`です。ICOを再生成する場合は
+`powershell -ExecutionPolicy Bypass -File tools/build_icon.ps1`を実行します。
+16～256pxの9サイズを収録し、通常のビルドには画像変換ツールは不要です。
+
 推奨環境はQt公式インストーラーのQt 6 MinGW 64-bit版です。
 Qt（Widgets / Sql / Test、QSQLITEプラグイン）、対応するMinGW、
 CMake 3.21以上、Ninjaが必要です（CMake / CTest / NinjaはPATHに配置）。

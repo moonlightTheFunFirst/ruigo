@@ -11,6 +11,12 @@ add_library(ruigo_ui src/MainWindow.cpp)
 target_link_libraries(ruigo_ui PUBLIC ruigo_core Qt6::Widgets)
 add_executable(ruigo WIN32 MACOSX_BUNDLE src/main.cpp)
 target_link_libraries(ruigo PRIVATE ruigo_ui)
+if(WIN32)
+    enable_language(RC)
+    target_sources(ruigo PRIVATE win/ruigo.rc assets/ruigo.qrc)
+    target_include_directories(ruigo PRIVATE "${PROJECT_SOURCE_DIR}/assets")
+    set_target_properties(ruigo PROPERTIES AUTORCC ON)
+endif()
 set_target_properties(ruigo PROPERTIES MACOSX_BUNDLE_GUI_IDENTIFIER "jp.keishin.ruigo"
     MACOSX_BUNDLE_BUNDLE_NAME "Ruigo" MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION})
