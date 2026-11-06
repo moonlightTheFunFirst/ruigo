@@ -1226,6 +1226,43 @@ private slots:
         QVERIFY(panel->isHidden());
         QVERIFY(heading->text().contains("見出しが見つかりませんでした"));
 
+        // The panel sits under the results in a vertical splitter and can be resized: the height the
+        // user drags to survives switching candidates, hiding/reappearing and a restart.
+        auto *resultSplitter = window.findChild<QSplitter *>("resultSplitter");
+        QVERIFY(resultSplitter);
+        QCOMPARE(resultSplitter->indexOf(panel), 1);
+        QCOMPARE(resultSplitter->indexOf(tree), 0);
+        QVERIFY(panel->maximumHeight() > 1000); // No fixed cap any more.
+        window.resize(1000, 700);
+        searchFor("美しい");
+        QApplication::processEvents();
+        const auto total = resultSplitter->sizes().value(0) + resultSplitter->sizes().value(1);
+        resultSplitter->setSizes({total - 260, 260});
+        emit resultSplitter->splitterMoved(total - 260, 1); // As a user drag would report.
+        const auto dragged = resultSplitter->sizes().value(1);
+        QVERIFY(qAbs(dragged - 260) <= 2);
+        tree->setCurrentItem(tree->topLevelItem(0)->child(0)); // Switching keeps the height.
+        QCOMPARE(resultSplitter->sizes().value(1), dragged);
+        searchFor("どちらにもない語");
+        QVERIFY(panel->isHidden());
+        searchFor("美しい"); // Reappears at the dragged height.
+        QApplication::processEvents();
+        QVERIFY(qAbs(resultSplitter->sizes().value(1) - dragged) <= 2);
+        window.close();
+        QCOMPARE(settings.value("window/kaikkiPanelHeight").toInt(), dragged);
+        {
+            MainWindow reopened(folder + "dictionary.sqlite");
+            reopened.resize(1000, 700);
+            reopened.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&reopened));
+            auto *reopenedInput = reopened.findChild<QLineEdit *>("searchInput");
+            reopenedInput->setText("美しい");
+            QTest::keyClick(reopenedInput, Qt::Key_Return);
+            QApplication::processEvents();
+            QVERIFY(qAbs(reopened.findChild<QSplitter *>("resultSplitter")->sizes().value(1) - dragged) <= 2);
+        }
+        settings.remove("window/kaikkiPanelHeight");
+
         // Without kaikki.sqlite beside the WordNet DB, the panel never appears.
         MainWindow plain(fixture_);
         auto *plainInput = plain.findChild<QLineEdit *>("searchInput");

@@ -264,14 +264,28 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     copyAction->setShortcutContext(Qt::WidgetShortcut);
     results_->addAction(copyAction);
     connect(copyAction, &QAction::triggered, this, [this] { copyWord(results_->currentItem()); });
-    rightLayout->addWidget(results_);
-    kaikkiPanel_ = new QPlainTextEdit(right);
+    // Results and the Kaikki panel share a vertical splitter so the panel can be resized.
+    // The panel's height is kept separately (not saveState): the panel is often hidden,
+    // and a hidden pane would be restored with no height.
+    resultSplitter_ = new QSplitter(Qt::Vertical, right);
+    resultSplitter_->setObjectName("resultSplitter");
+    resultSplitter_->setChildrenCollapsible(false);
+    results_->setMinimumHeight(80);
+    resultSplitter_->addWidget(results_);
+    kaikkiPanel_ = new QPlainTextEdit;
     kaikkiPanel_->setObjectName("kaikkiSupplement");
     kaikkiPanel_->setAccessibleName(QStringLiteral("Wiktionary / Kaikki の補足"));
     kaikkiPanel_->setReadOnly(true);
-    kaikkiPanel_->setMaximumHeight(180);
+    kaikkiPanel_->setMinimumHeight(60);
     kaikkiPanel_->hide();
-    rightLayout->addWidget(kaikkiPanel_);
+    resultSplitter_->addWidget(kaikkiPanel_);
+    resultSplitter_->setStretchFactor(0, 1);
+    resultSplitter_->setStretchFactor(1, 0);
+    kaikkiHeight_ = qBound(60, settings_.value("window/kaikkiPanelHeight", 180).toInt(), 2000);
+    connect(resultSplitter_, &QSplitter::splitterMoved, this, [this] {
+        if (!kaikkiPanel_->isHidden()) kaikkiHeight_ = resultSplitter_->sizes().value(1, kaikkiHeight_);
+    });
+    rightLayout->addWidget(resultSplitter_);
     auto *hint = new QLabel(QStringLiteral("類語候補をダブルクリック・Enter・Ctrl+Cでコピー ／ 検索欄で↓で候補へ移動 ／ 右クリックで操作"));
     hint->setObjectName("resultHint");
     hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
@@ -485,21 +499,29 @@ void MainWindow::updateKaikki() {
 void MainWindow::showKaikkiFor(QTreeWidgetItem *item) {
     // A selected candidate shows its own Kaikki entries; a meaning heading or no
     // selection shows the search word's. Nothing is searched again or recorded.
-    kaikkiPanel_->clear();
-    kaikkiPanel_->hide();
-    if (!kaikki_.isOpen()) return;
-    if (item && item->parent()) {
-        const auto word = item->data(0, Qt::UserRole).toString();
-        const auto body = kaikkiText({word});
-        kaikkiPanel_->setPlainText(
-            QStringLiteral("Wiktionary / Kaikki — 選択中の候補「%1」（意味の行を選ぶと検索語に戻ります）\n\n%2")
-                .arg(word, body.isEmpty() ? QStringLiteral("この候補の項目はありません。") : body));
-        kaikkiPanel_->show();
+    QString text;
+    if (kaikki_.isOpen()) {
+        if (item && item->parent()) {
+            const auto word = item->data(0, Qt::UserRole).toString();
+            const auto body = kaikkiText({word});
+            text = QStringLiteral("Wiktionary / Kaikki — 選択中の候補「%1」（意味の行を選ぶと検索語に戻ります）\n\n%2")
+                       .arg(word, body.isEmpty() ? QStringLiteral("この候補の項目はありません。") : body);
+        } else if (!searchKaikki_.isEmpty()) {
+            text = QStringLiteral("Wiktionary / Kaikki\n\n") + searchKaikki_;
+        }
+    }
+    if (text.isEmpty()) {
+        kaikkiPanel_->clear();
+        kaikkiPanel_->hide();
         return;
     }
-    if (searchKaikki_.isEmpty()) return;
-    kaikkiPanel_->setPlainText(QStringLiteral("Wiktionary / Kaikki\n\n") + searchKaikki_);
-    kaikkiPanel_->show();
+    kaikkiPanel_->setPlainText(text);
+    if (kaikkiPanel_->isHidden()) {
+        // Reappearing: give it the height the user last chose (switching while visible keeps it).
+        kaikkiPanel_->show();
+        const auto total = qMax(resultSplitter_->height(), kaikkiHeight_ + results_->minimumHeight());
+        resultSplitter_->setSizes({qMax(total - kaikkiHeight_, results_->minimumHeight()), kaikkiHeight_});
+    }
 }
 QString MainWindow::kaikkiText(const QStringList &words) const {
     const auto direct = kaikki_.search(words, language_);
@@ -742,6 +764,7 @@ void MainWindow::copyWord(QTreeWidgetItem *item) {
 void MainWindow::closeEvent(QCloseEvent *event) {
     settings_.setValue("window/geometry", saveGeometry());
     settings_.setValue("window/splitter", splitter_->saveState());
+    settings_.setValue("window/kaikkiPanelHeight", kaikkiHeight_);
     settings_.sync();
     QMainWindow::closeEvent(event);
 }

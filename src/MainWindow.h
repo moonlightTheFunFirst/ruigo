@@ -45,6 +45,8 @@ private:
     QString originalWord_;
     QString searchKaikki_; // Kaikki text for the search word; empty when there is none.
     QPlainTextEdit *kaikkiPanel_;
+    QSplitter *resultSplitter_;   // Results above, Kaikki panel below.
+    int kaikkiHeight_ = 180;      // Panel height last chosen by the user (window/kaikkiPanelHeight).
     QPushButton *alternativeButton_;
     QPushButton *formOfButton_;
     QCheckBox *showRelatedCheck_;
