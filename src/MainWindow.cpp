@@ -259,6 +259,8 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     results_->setContextMenuPolicy(Qt::CustomContextMenu);
     results_->installEventFilter(this); // Enter copies, Up from the first word returns to the search box.
     input_->installEventFilter(this);   // Down moves to the first candidate.
+    historyList_->installEventFilter(this);     // Right moves to the candidates.
+    spellingChoices_->installEventFilter(this); // Left returns to the history.
     auto *copyAction = new QAction(QStringLiteral("コピー"), results_);
     copyAction->setShortcut(QKeySequence::Copy);
     copyAction->setShortcutContext(Qt::WidgetShortcut);
@@ -778,6 +780,38 @@ bool MainWindow::eventFilter(QObject *object, QEvent *event) {
                 }
             }
             return false;
+        }
+        // Right in the history moves to the candidates (keeping a selected candidate, else the
+        // first one; a headword choice list when there are no candidates). Nothing is searched.
+        if (object == historyList_ && plain && key->key() == Qt::Key_Right) {
+            auto *current = results_->currentItem();
+            if (current && current->parent()) {
+                results_->setFocus(Qt::TabFocusReason);
+                return true;
+            }
+            for (int i = 0; i < results_->topLevelItemCount(); ++i) {
+                if (auto *group = results_->topLevelItem(i); group->childCount() > 0) {
+                    results_->setFocus(Qt::TabFocusReason);
+                    results_->setCurrentItem(group->child(0));
+                    return true;
+                }
+            }
+            if (!spellingChoices_->isHidden() && spellingChoices_->count() > 0) {
+                spellingChoices_->setFocus(Qt::TabFocusReason);
+                if (spellingChoices_->currentRow() < 0) spellingChoices_->setCurrentRow(0);
+            }
+            return true;
+        }
+        // Left in the candidates (or a headword choice list) returns to the history. It replaces
+        // the tree's own Left (jumping to the meaning heading / collapsing it). The history row
+        // is only highlighted, never searched.
+        if ((object == results_ || object == spellingChoices_) && plain && key->key() == Qt::Key_Left) {
+            if (historyList_->count() > 0) {
+                QSignalBlocker blocker(historyList_);
+                if (!historyList_->currentItem()) historyList_->setCurrentRow(0);
+                historyList_->setFocus(Qt::TabFocusReason);
+            }
+            return true;
         }
         if (object == results_ && plain) {
             auto *current = results_->currentItem();

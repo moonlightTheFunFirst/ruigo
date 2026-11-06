@@ -416,11 +416,39 @@ private slots:
         QTest::keyClick(tree, Qt::Key_Up);
         QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(input));
         QCOMPARE(input->selectedText(), QString("美しい"));
+        // Left from a candidate goes to the history (not to the meaning heading); Right comes
+        // back to the same candidate. Neither key searches.
+        auto *history = window.findChild<QListWidget *>("historyList");
+        auto *second = tree->topLevelItem(1)->child(0);
+        tree->setCurrentItem(second);
+        tree->setFocus();
+        QTest::keyClick(tree, Qt::Key_Left);
+        QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(history));
+        QCOMPARE(history->currentRow(), 0);
+        QCOMPARE(tree->currentItem(), second);
+        QTest::keyClick(history, Qt::Key_Right);
+        QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(tree));
+        QCOMPARE(tree->currentItem(), second);
+        // Left on a meaning heading also goes to the history without collapsing it; Right then
+        // picks the first candidate.
+        tree->setCurrentItem(tree->topLevelItem(0));
+        QTest::keyClick(tree, Qt::Key_Left);
+        QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(history));
+        QVERIFY(tree->topLevelItem(0)->isExpanded());
+        QTest::keyClick(history, Qt::Key_Right);
+        QCOMPARE(tree->currentItem(), tree->topLevelItem(0)->child(0));
+        QCOMPARE(input->text(), QString("美しい"));
+        QCOMPARE(history->count(), 1);
         // Down with no candidates stays in the search box.
+        input->setFocus();
         input->setText("存在しない語");
         QTest::keyClick(input, Qt::Key_Return);
         QTest::keyClick(input, Qt::Key_Down);
         QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(input));
+        // Right with no candidates stays in the history.
+        history->setFocus();
+        QTest::keyClick(history, Qt::Key_Right);
+        QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(history));
         window.close();
         settings.setValue("history/entries", QStringList{});
     }
