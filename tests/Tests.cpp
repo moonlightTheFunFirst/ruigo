@@ -1308,8 +1308,8 @@ private slots:
         QVERIFY(resultSplitter && bottomSplitter && details);
         QCOMPARE(resultSplitter->indexOf(tree), 0);
         QCOMPARE(resultSplitter->indexOf(bottomSplitter), 1);
-        QCOMPARE(bottomSplitter->indexOf(panel), 0);
-        QCOMPARE(bottomSplitter->indexOf(details), 1);
+        QCOMPARE(bottomSplitter->indexOf(details), 0);
+        QCOMPARE(bottomSplitter->indexOf(panel), 1);
         QVERIFY(bottomSplitter->maximumHeight() > 1000); // No fixed cap.
         window.resize(1000, 700);
         searchFor("美しい");
@@ -1320,13 +1320,13 @@ private slots:
         const auto dragged = resultSplitter->sizes().value(1);
         QVERIFY(qAbs(dragged - 260) <= 2);
         const auto width = bottomSplitter->sizes().value(0) + bottomSplitter->sizes().value(1);
-        bottomSplitter->setSizes({width - 300, 300});
-        emit bottomSplitter->splitterMoved(width - 300, 1);
-        const auto detailsWidth = bottomSplitter->sizes().value(1);
+        bottomSplitter->setSizes({300, width - 300});
+        emit bottomSplitter->splitterMoved(300, 1);
+        const auto detailsWidth = bottomSplitter->sizes().value(0);
         QVERIFY(qAbs(detailsWidth - 300) <= 2);
         tree->setCurrentItem(tree->topLevelItem(0)->child(0)); // Switching keeps the sizes.
         QCOMPARE(resultSplitter->sizes().value(1), dragged);
-        QCOMPARE(bottomSplitter->sizes().value(1), detailsWidth);
+        QCOMPARE(bottomSplitter->sizes().value(0), detailsWidth);
         searchFor("どちらにもない語");
         QVERIFY(panel->isHidden());
         QVERIFY(details->isVisible()); // Shown even when the Kaikki panel is hidden.
@@ -1334,7 +1334,7 @@ private slots:
         searchFor("美しい"); // The panel reappears beside the details at the dragged width.
         QApplication::processEvents();
         QVERIFY(qAbs(resultSplitter->sizes().value(1) - dragged) <= 2);
-        QVERIFY(qAbs(bottomSplitter->sizes().value(1) - detailsWidth) <= 2);
+        QVERIFY(qAbs(bottomSplitter->sizes().value(0) - detailsWidth) <= 2);
         window.close();
         QCOMPARE(settings.value("window/kaikkiPanelHeight").toInt(), dragged);
         QCOMPARE(settings.value("window/detailsPanelWidth").toInt(), detailsWidth);
@@ -1350,7 +1350,7 @@ private slots:
             QTest::keyClick(reopenedInput, Qt::Key_Return);
             QApplication::processEvents();
             QVERIFY(qAbs(reopened.findChild<QSplitter *>("resultSplitter")->sizes().value(1) - dragged) <= 2);
-            QVERIFY(qAbs(reopened.findChild<QSplitter *>("bottomSplitter")->sizes().value(1) - detailsWidth) <= 2);
+            QVERIFY(qAbs(reopened.findChild<QSplitter *>("bottomSplitter")->sizes().value(0) - detailsWidth) <= 2);
         }
         settings.remove("window/kaikkiPanelHeight");
         settings.remove("window/detailsPanelWidth");

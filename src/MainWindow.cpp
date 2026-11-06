@@ -286,15 +286,15 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     kaikkiPanel_->setReadOnly(true);
     kaikkiPanel_->setMinimumWidth(160);
     kaikkiPanel_->hide();
-    bottomSplitter_->addWidget(kaikkiPanel_);
     detailsPanel_ = new QTextBrowser;
     detailsPanel_->setObjectName("wordDetails");
     detailsPanel_->setAccessibleName(QStringLiteral("選択中の候補の詳細"));
     detailsPanel_->setOpenLinks(false);
     detailsPanel_->setMinimumWidth(160);
-    bottomSplitter_->addWidget(detailsPanel_);
-    bottomSplitter_->setStretchFactor(0, 1);
-    bottomSplitter_->setStretchFactor(1, 0);
+    bottomSplitter_->addWidget(detailsPanel_); // Details on the left, Kaikki on the right.
+    bottomSplitter_->addWidget(kaikkiPanel_);
+    bottomSplitter_->setStretchFactor(0, 0);
+    bottomSplitter_->setStretchFactor(1, 1);
     resultSplitter_->addWidget(bottomSplitter_);
     resultSplitter_->setStretchFactor(0, 1);
     resultSplitter_->setStretchFactor(1, 0);
@@ -304,7 +304,7 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         bottomHeight_ = resultSplitter_->sizes().value(1, bottomHeight_);
     });
     connect(bottomSplitter_, &QSplitter::splitterMoved, this, [this] {
-        if (!kaikkiPanel_->isHidden()) detailsWidth_ = bottomSplitter_->sizes().value(1, detailsWidth_);
+        if (!kaikkiPanel_->isHidden()) detailsWidth_ = bottomSplitter_->sizes().value(0, detailsWidth_);
     });
     rightLayout->addWidget(resultSplitter_);
     auto *hint = new QLabel(QStringLiteral("類語候補をダブルクリック・Enter・Ctrl+Cでコピー ／ 検索欄で↓で候補へ移動 ／ 右クリックで操作"));
@@ -560,7 +560,7 @@ void MainWindow::showKaikkiFor(QTreeWidgetItem *item) {
         // Reappearing: the details keep the width the user last chose (switching while visible keeps it).
         kaikkiPanel_->show();
         const auto total = qMax(bottomSplitter_->width(), detailsWidth_ + kaikkiPanel_->minimumWidth());
-        bottomSplitter_->setSizes({qMax(total - detailsWidth_, kaikkiPanel_->minimumWidth()), detailsWidth_});
+        bottomSplitter_->setSizes({detailsWidth_, qMax(total - detailsWidth_, kaikkiPanel_->minimumWidth())});
     }
 }
 void MainWindow::applyBottomSizes() {
