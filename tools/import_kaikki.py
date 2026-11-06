@@ -11,6 +11,7 @@ from pathlib import Path
 import sqlite3
 import sys
 from tempfile import TemporaryDirectory
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = {
@@ -222,7 +223,7 @@ def build(source, output, wordnet, *, evaluate=False, candidate_url=None, dump_d
                   if evaluate else SOURCE)
     # Generate beside the output so publication is an atomic replace. Evaluation
     # uses the same code path and discards its database.
-    with TemporaryDirectory(prefix="kaikki-", dir=output.parent) as folder:
+    with TemporaryDirectory(prefix="kaikki-", dir=output.parent, ignore_cleanup_errors=True) as folder:
         temporary = Path(folder) / "kaikki.sqlite"
         with closing(sqlite3.connect(temporary, uri=True)) as db:
             db.execute("ATTACH DATABASE ? AS wordnet", (wordnet.resolve().as_uri() + "?mode=ro",))
@@ -241,8 +242,21 @@ def build(source, output, wordnet, *, evaluate=False, candidate_url=None, dump_d
         result = {"source": provenance, "sha256": digest, "database_bytes": temporary.stat().st_size,
                   "languages": report, "skipped": dict(stats)}
         if not evaluate:
-            temporary.replace(output)
+            replace_with_retry(temporary, output)
         return result
+
+
+def replace_with_retry(source, target, attempts=20, delay=0.5):
+    # On Windows, antivirus or the search indexer can briefly open a freshly
+    # written file, making the rename fail with a sharing violation.
+    for attempt in range(attempts):
+        try:
+            source.replace(target)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
 
 
 def main():
