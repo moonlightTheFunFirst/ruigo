@@ -324,7 +324,7 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         if (!kaikkiPanel_->isHidden()) detailsWidth_ = bottomSplitter_->sizes().value(0, detailsWidth_);
     });
     rightLayout->addWidget(resultSplitter_);
-    auto *hint = new QLabel(QStringLiteral("候補をダブルクリック・Enter・Ctrl+Cでコピー ／ 検索欄で↓で候補へ移動 ／ 右クリックで操作"));
+    auto *hint = new QLabel(QStringLiteral("Ctrl＋←で候補を入力履歴に追加 ／ ダブルクリック・Enter・Ctrl+Cでコピー ／ 検索欄で↓で候補へ移動 ／ 右クリックで操作"));
     hint->setObjectName("resultHint");
     hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     statusBar()->addWidget(hint, 1);
@@ -882,6 +882,19 @@ bool MainWindow::eventFilter(QObject *object, QEvent *event) {
     if (event->type() == QEvent::KeyPress) {
         const auto *key = static_cast<QKeyEvent *>(event);
         const bool plain = key->modifiers() == Qt::NoModifier || key->modifiers() == Qt::KeypadModifier;
+        if (object == results_ && key->key() == Qt::Key_Left &&
+            (key->modifiers() & ~Qt::KeypadModifier) == Qt::ControlModifier) {
+            const auto *item = results_->currentItem();
+            if (item && item->parent()) {
+                const auto word = item->data(0, Qt::UserRole).toString();
+                const auto candidateLanguage = item->data(0, Qt::UserRole + 3).toString();
+                if (history_.add(word, candidateLanguage.isEmpty() ? language_ : candidateLanguage)) {
+                    refreshHistory();
+                    statusBar()->showMessage(QStringLiteral("「%1」を入力履歴に追加しました").arg(word), 2500);
+                }
+            }
+            return true;
+        }
         // Down in the search box moves to the first candidate so that a word can be
         // chosen and copied without the mouse.
         if (object == input_ && plain && key->key() == Qt::Key_Down) {

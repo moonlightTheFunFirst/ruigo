@@ -440,6 +440,19 @@ private slots:
         QCOMPARE(tree->currentItem(), tree->topLevelItem(0)->child(0));
         QCOMPARE(input->text(), QString("美しい"));
         QCOMPARE(history->count(), 1);
+        const auto *firstCandidate = tree->currentItem();
+        QTest::keyClick(tree, Qt::Key_Left, Qt::ControlModifier);
+        QCOMPARE(settings.value("history/entries").toStringList(), (QStringList{"ja:綺麗", "ja:美しい"}));
+        QCOMPARE(tree->currentItem(), firstCandidate);
+        QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(tree));
+        QCOMPARE(input->text(), QString("美しい"));
+        tree->setCurrentItem(second);
+        QTest::keyClick(tree, Qt::Key_Left, Qt::ControlModifier);
+        tree->setCurrentItem(tree->topLevelItem(0)->child(0));
+        QTest::keyClick(tree, Qt::Key_Left, Qt::ControlModifier);
+        tree->setCurrentItem(tree->topLevelItem(0));
+        QTest::keyClick(tree, Qt::Key_Left, Qt::ControlModifier);
+        QCOMPARE(settings.value("history/entries").toStringList(), (QStringList{"ja:麗しい", "ja:綺麗", "ja:美しい"}));
         // Down with no candidates stays in the search box.
         input->setFocus();
         input->setText("存在しない語");
@@ -1518,6 +1531,11 @@ private slots:
         QTest::keyClick(editor, Qt::Key_Return);
         QTRY_VERIFY(heading->text().contains("和英（JMdict）"));
         QCOMPARE(settings.value("history/entries").toStringList(), (QStringList{"ja:Tシャツ", "ja:AI"}));
+        auto *candidate = tree->topLevelItem(0)->child(0);
+        tree->setCurrentItem(candidate);
+        QTest::keyClick(tree, Qt::Key_Left, Qt::ControlModifier);
+        QCOMPARE(settings.value("history/entries").toStringList(), (QStringList{"en:T-shirt", "ja:Tシャツ", "ja:AI"}));
+        QCOMPARE(tree->currentItem(), candidate);
         settings.remove("search/translationMode");
         settings.setValue("history/entries", QStringList{});
     }

@@ -39,14 +39,15 @@ QStringList SearchHistory::words(const QString &language) const {
     for (const auto &entry : entries()) if (entry.language == language) result.append(entry.word);
     return result;
 }
-void SearchHistory::add(const QString &input, const QString &language) {
+bool SearchHistory::add(const QString &input, const QString &language) {
     const auto word = input.trimmed();
-    if (word.isEmpty() || !supported(language)) return;
+    if (word.isEmpty() || !supported(language)) return false;
     auto items = entries();
-    for (const auto &entry : items) if (entry.word == word && entry.language == language) return;
+    for (const auto &entry : items) if (entry.word == word && entry.language == language) return false;
     items.prepend({word, language});
     if (items.size() > 100) items.removeLast();
     save(items);
+    return true;
 }
 QString SearchHistory::edit(const QString &original, const QString &replacement, const QString &language,
                             const QString &replacementLanguage) {
