@@ -1,5 +1,6 @@
 #pragma once
 #include "DictionaryRepository.h"
+#include "JmdictRepository.h"
 #include "KaikkiRepository.h"
 #include "SearchHistory.h"
 #include <QMainWindow>
@@ -10,6 +11,7 @@ class QTreeWidgetItem;
 class QLabel;
 class QPushButton;
 class QCheckBox;
+class QRadioButton;
 class QSplitter;
 class QPlainTextEdit;
 class QTextBrowser;
@@ -23,8 +25,10 @@ private:
     void search(const QString &word, const QString &language = {}, bool record = false,
                 const QVector<qint64> &entries = {}, const QString &originalInput = {});
     void updateKaikki();
+    TranslationResult translate(const QString &word, QString &language, bool automatic) const;
+    void showTranslation(const QString &word, const TranslationResult &result);
     void showKaikkiFor(QTreeWidgetItem *item);
-    QString kaikkiText(const QStringList &words) const;
+    QString kaikkiText(const QStringList &words, const QString &language) const;
     void showDetailsFor(QTreeWidgetItem *item);
     void applyBottomSizes();
     void showResult();
@@ -40,6 +44,7 @@ private:
     QSettings settings_;
     SearchHistory history_{settings_};
     DictionaryRepository repository_;
+    JmdictRepository jmdict_;
     KaikkiRepository kaikki_;
     QString language_ = QStringLiteral("ja");
     QString alternativeLanguage_;
@@ -57,6 +62,7 @@ private:
     QPushButton *alternativeButton_;
     QPushButton *formOfButton_;
     QCheckBox *showRelatedCheck_;
+    QRadioButton *translationMode_;
     QLineEdit *input_;
     QListWidget *historyList_;
     QListWidget *spellingChoices_;

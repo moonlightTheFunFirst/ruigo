@@ -19,6 +19,7 @@
 #include <QDialog>
 #include <QPushButton>
 #include <QCheckBox>
+#include <QRadioButton>
 #include <QSpinBox>
 #include <QFontComboBox>
 #include <QFontDatabase>
@@ -1411,6 +1412,162 @@ private slots:
         input->setText(QStringLiteral("zzznosuchentryzzzz"));
         QTest::keyClick(input, Qt::Key_Return);
         QVERIFY(panel->isHidden());
+    }
+    void jmdictFixture() {
+        QVERIFY(QDir(temporary_.path()).mkpath("jmdict-fixture"));
+        const auto folder = temporary_.filePath("jmdict-fixture/");
+        const auto path = folder + "dictionary.sqlite";
+        QVERIFY(QFile::copy(fixture_, path));
+        const auto run = [](MainWindow &window, const QString &word) {
+            auto *input = window.findChild<QLineEdit *>("searchInput");
+            input->setText(word);
+            QTest::keyClick(input, Qt::Key_Return);
+            return window.findChild<QLabel *>("resultHeading")->text();
+        };
+        const auto enable = [](MainWindow &window) {
+            window.findChild<QRadioButton *>("translationMode")->setChecked(true);
+        };
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{});
+        {
+            MainWindow missing(path);
+            enable(missing);
+            QVERIFY(run(missing, "run").contains("JMdict辞書が見つかりません"));
+        }
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", "jmdict-fixture");
+            db.setDatabaseName(folder + "jmdict.sqlite");
+            QVERIFY(db.open());
+            QVERIFY(QSqlQuery(db).exec("PRAGMA user_version=1"));
+            {
+                MainWindow old(path);
+                enable(old);
+                QVERIFY(run(old, "run").contains("再生成"));
+            }
+            const QStringList sql = {
+                "PRAGMA user_version=2",
+                "CREATE TABLE senses(id INTEGER PRIMARY KEY,entry INTEGER,position INTEGER,pos TEXT)",
+                "CREATE TABLE forms(sense INTEGER,word TEXT,reading TEXT)",
+                "CREATE TABLE glosses(sense INTEGER,position INTEGER,text TEXT,exact TEXT,folded TEXT,bare_verb TEXT)",
+                "INSERT INTO senses VALUES (1,1,1,'verb'),(2,2,1,'noun'),(3,3,1,'noun'),(4,4,1,'noun'),(5,5,1,'noun')",
+                "INSERT INTO forms VALUES (1,'走る','はしる'),(2,'連続','れんぞく'),"
+                "(3,'Ｔシャツ','ティーシャツ'),(3,'ティーシャツ','ティーシャツ'),(4,'ＣＤ','シーディー'),(5,'ＡＩ','エーアイ')",
+                "INSERT INTO glosses VALUES (1,0,'to run','to run','to run','run'),(2,0,'run','run','run',NULL),"
+                "(3,0,'T-shirt','T-shirt','t-shirt',NULL),(4,0,'CD','CD','cd',NULL),(5,0,'AI','AI','ai',NULL)"
+            };
+            QSqlQuery query(db);
+            for (const auto &statement : sql) QVERIFY2(query.exec(statement), qPrintable(query.lastError().text()));
+        }
+        QSqlDatabase::removeDatabase("jmdict-fixture");
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", "jmdict-kaikki-fixture");
+            db.setDatabaseName(folder + "kaikki.sqlite");
+            QVERIFY(db.open());
+            const QStringList sql = {
+                "PRAGMA user_version=2",
+                "CREATE TABLE entries(id INTEGER PRIMARY KEY,word TEXT,language TEXT,pos TEXT)",
+                "CREATE TABLE senses(id INTEGER PRIMARY KEY,entry_id INTEGER,source_position INTEGER,glosses_json TEXT,gloss_language TEXT)",
+                "CREATE TABLE relations(id INTEGER PRIMARY KEY,entry_id INTEGER,sense_id INTEGER,kind TEXT,target_word TEXT,target_language TEXT)",
+                "CREATE TABLE spelling_references(sense_id INTEGER,target_entry_id INTEGER)",
+                "INSERT INTO entries VALUES (1,'run','en','verb'),(2,'走る','ja','verb')",
+                R"(INSERT INTO senses VALUES (1,1,1,'["run supplement"]','en'),(2,2,1,'["走るの補足"]','ja'))"
+            };
+            QSqlQuery query(db);
+            for (const auto &statement : sql) QVERIFY2(query.exec(statement), qPrintable(query.lastError().text()));
+        }
+        QSqlDatabase::removeDatabase("jmdict-kaikki-fixture");
+        JmdictRepository dictionary;
+        dictionary.open(folder + "jmdict.sqlite");
+        for (const auto &word : {"Tシャツ", "Ｔシャツ", "CD", "AI"}) {
+            const auto result = dictionary.search(word, "ja");
+            QVERIFY2(result.error.isEmpty(), qPrintable(result.error));
+            QCOMPARE(result.senses.size(), 1);
+        }
+        QCOMPARE(dictionary.search("Tシャツ", "ja").senses.first().words.size(), 2);
+        QCOMPARE(dictionary.search("to run", "en").senses.size(), 1);
+        const auto both = dictionary.search("run", "en");
+        QCOMPARE(both.senses.size(), 2);
+        QCOMPARE(both.senses.at(0).words.first(), QString("連続"));
+        QCOMPARE(both.senses.at(1).words.first(), QString("走る"));
+
+        settings.remove("search/translationMode");
+        settings.setValue("history/entries", QStringList{"ja:AI"});
+        MainWindow window(path);
+        auto *history = window.findChild<QListWidget *>("historyList");
+        history->setCurrentRow(0);
+        enable(window);
+        auto *heading = window.findChild<QLabel *>("resultHeading");
+        QVERIFY(heading->text().contains("和英（JMdict）"));
+        QCOMPARE(settings.value("history/entries").toStringList(), QStringList{"ja:AI"});
+        QVERIFY(run(window, "run").contains("英和（JMdict逆引き）"));
+        auto *tree = window.findChild<QTreeWidget *>("results");
+        auto *panel = window.findChild<QPlainTextEdit *>("kaikkiSupplement");
+        QVERIFY(panel->toPlainText().contains("run supplement"));
+        tree->setCurrentItem(tree->topLevelItem(1)->child(0));
+        QVERIFY(panel->toPlainText().contains("走るの補足"));
+        const auto details = window.findChild<QTextBrowser *>("wordDetails")->toPlainText();
+        QVERIFY(details.contains("はしる") && details.contains("to run"));
+        tree->setCurrentItem(tree->topLevelItem(1));
+        QVERIFY(panel->toPlainText().contains("run supplement"));
+
+        history->setCurrentRow(0); // en:run
+        history->editItem(history->currentItem());
+        auto *editor = history->findChild<QLineEdit *>("historyEditor");
+        QVERIFY(editor);
+        editor->setText("Tシャツ");
+        QTest::keyClick(editor, Qt::Key_Return);
+        QTRY_VERIFY(heading->text().contains("和英（JMdict）"));
+        QCOMPARE(settings.value("history/entries").toStringList(), (QStringList{"ja:Tシャツ", "ja:AI"}));
+        settings.remove("search/translationMode");
+        settings.setValue("history/entries", QStringList{});
+    }
+    void jmdictTranslation() {
+        const auto path = QStringLiteral(RUIGO_SOURCE_DIR "/data/dictionary.sqlite");
+        const auto jmdictPath = QStringLiteral(RUIGO_SOURCE_DIR "/data/jmdict.sqlite");
+        if (!QFileInfo::exists(jmdictPath)) QSKIP("Build the JMdict database to run translation integration tests");
+        JmdictRepository dictionary;
+        dictionary.open(jmdictPath);
+        const auto japanese = dictionary.search(QStringLiteral("美しい"), "ja");
+        QVERIFY2(japanese.error.isEmpty(), qPrintable(japanese.error));
+        QVERIFY(std::any_of(japanese.senses.begin(), japanese.senses.end(),
+                            [](const auto &sense) { return sense.glosses.contains("beautiful"); }));
+        QVERIFY(!dictionary.search(QStringLiteral("うつくしい"), "ja").senses.isEmpty());
+        QVERIFY(!dictionary.search("Tシャツ", "ja").senses.isEmpty());
+        const auto run = dictionary.search("run", "en");
+        QVERIFY(std::any_of(run.senses.begin(), run.senses.end(), [](const auto &sense) {
+            return sense.words.contains(QStringLiteral("走る"));
+        }));
+        const auto english = dictionary.search("ICE CREAM", "en");
+        QVERIFY2(english.error.isEmpty(), qPrintable(english.error));
+        QVERIFY(std::any_of(english.senses.begin(), english.senses.end(), [](const auto &sense) {
+            return sense.words.contains(QStringLiteral("アイスクリーム"));
+        }));
+        QSettings settings;
+        settings.remove("search/translationMode");
+        MainWindow window(path);
+        auto *mode = window.findChild<QRadioButton *>("translationMode");
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *heading = window.findChild<QLabel *>("resultHeading");
+        auto *tree = window.findChild<QTreeWidget *>("results");
+        QVERIFY(mode && input && heading && tree);
+        const auto history = settings.value("history/entries");
+        input->setText("ice cream");
+        mode->setChecked(true);
+        QVERIFY(heading->text().contains(QStringLiteral("英和（JMdict逆引き）")));
+        QVERIFY(tree->topLevelItemCount() > 0);
+        QCOMPARE(settings.value("history/entries"), history);
+        input->setText(QStringLiteral("美しい"));
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(heading->text().contains(QStringLiteral("和英（JMdict）")));
+        QVERIFY(tree->topLevelItemCount() > 0);
+        const auto buttons = window.findChildren<QRadioButton *>();
+        for (auto *button : buttons) {
+            if (button != mode) button->setChecked(true);
+        }
+        QVERIFY(!mode->isChecked());
+        QVERIFY(heading->text().contains(QStringLiteral("類語")));
+        settings.remove("search/translationMode");
+        settings.setValue("history/entries", history);
     }
     void realDictionary() {
         const auto path = QStringLiteral(RUIGO_SOURCE_DIR "/data/dictionary.sqlite");

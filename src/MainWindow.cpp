@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 #include <QApplication>
+#include <QRadioButton>
+#include <QHBoxLayout>
 #include <QAccessible>
 #include <QAction>
 #include <QClipboard>
@@ -140,6 +142,16 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     input_->setPlaceholderText(QStringLiteral("単語を入力して Enter"));
     input_->setClearButtonEnabled(true);
     leftLayout->addWidget(input_);
+    auto *modes = new QHBoxLayout;
+    auto *synonymMode = new QRadioButton(QStringLiteral("類語"));
+    translationMode_ = new QRadioButton(QStringLiteral("翻訳"));
+    translationMode_->setObjectName("translationMode");
+    modes->addWidget(synonymMode);
+    modes->addWidget(translationMode_);
+    modes->addStretch();
+    leftLayout->addLayout(modes);
+    if (settings_.value("search/translationMode", false).toBool()) translationMode_->setChecked(true);
+    else synonymMode->setChecked(true);
     leftLayout->addWidget(new QLabel(QStringLiteral("入力履歴")));
     historyList_ = new QListWidget;
     historyList_->setObjectName("historyList");
@@ -152,7 +164,12 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         const auto word = replacement.trimmed();
         auto newLanguage = language;
         if (!word.isEmpty() && word != original) {
-            newLanguage = repository_.resolveLanguage(word);
+            if (translationMode_->isChecked()) {
+                newLanguage.clear();
+                translate(word, newLanguage, true);
+            } else {
+                newLanguage = repository_.resolveLanguage(word);
+            }
         }
         const auto error = history_.edit(original, word, language, newLanguage);
         if (!error.isEmpty()) statusBar()->showMessage(error, 4000);
@@ -307,13 +324,33 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         if (!kaikkiPanel_->isHidden()) detailsWidth_ = bottomSplitter_->sizes().value(0, detailsWidth_);
     });
     rightLayout->addWidget(resultSplitter_);
-    auto *hint = new QLabel(QStringLiteral("類語候補をダブルクリック・Enter・Ctrl+Cでコピー ／ 検索欄で↓で候補へ移動 ／ 右クリックで操作"));
+    auto *hint = new QLabel(QStringLiteral("候補をダブルクリック・Enter・Ctrl+Cでコピー ／ 検索欄で↓で候補へ移動 ／ 右クリックで操作"));
     hint->setObjectName("resultHint");
     hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     statusBar()->addWidget(hint, 1);
     setCentralWidget(splitter_);
     splitter_->setSizes({300, 700});
     connect(input_, &QLineEdit::returnPressed, this, [this] { search(input_->text(), {}, true); });
+    connect(translationMode_, &QRadioButton::toggled, this, [this](bool enabled) {
+        settings_.setValue("search/translationMode", enabled);
+        showRelatedCheck_->setVisible(!enabled);
+        if (!input_->text().trimmed().isEmpty()) {
+            const auto requested = input_->text().trimmed() == lastWord_ ? language_ : QString{};
+            search(input_->text(), requested);
+        }
+        else {
+            heading_->hide();
+            results_->clear();
+            spellingChoices_->hide();
+            alternativeButton_->hide();
+            formOfButton_->hide();
+            lastResult_ = {};
+            lastWord_.clear();
+            searchKaikki_.clear();
+            showKaikkiFor(nullptr);
+            showDetailsFor(nullptr);
+        }
+    });
     const auto searchHistoryItem = [this](QListWidgetItem *item) {
         if (item) search(item->data(Qt::UserRole + 1).toString(), item->data(Qt::UserRole).toString());
     };
@@ -335,7 +372,8 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         auto *find = menu.addAction(QStringLiteral("この単語で検索"));
         auto *selected = menu.exec(results_->viewport()->mapToGlobal(point));
         if (selected == copy) copyWord(item);
-        else if (selected == find) search(word, language_);
+        else if (selected == find) search(word, translationMode_->isChecked()
+            ? (language_ == "ja" ? QStringLiteral("en") : QStringLiteral("ja")) : language_);
     });
     refreshHistory();
     restoreGeometry(settings_.value("window/geometry").toByteArray());
@@ -350,6 +388,9 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         heading_->show();
     }
     const auto warning = kaikki_.open(QFileInfo(dictionaryPath).dir().filePath("kaikki.sqlite"));
+    jmdict_.open(QFileInfo(dictionaryPath).dir().filePath("jmdict.sqlite"));
+    showRelatedCheck_->setVisible(!translationMode_->isChecked());
+    if (translationMode_->isChecked()) heading_->hide();
     if (!warning.isEmpty()) statusBar()->showMessage(warning, 15000);
     applyDisplaySettings();
     showDetailsFor(nullptr);
@@ -502,14 +543,20 @@ void MainWindow::search(const QString &input, const QString &requestedLanguage, 
     const auto word = input.trimmed();
     if (word.isEmpty()) return;
     input_->setText(word);
-    // A headword chosen from a reading/inflection keeps its matched entries; history
-    // still stores only the word and language.
-    lastResult_ = entries.isEmpty() ? repository_.search(word, requestedLanguage)
-                                    : repository_.searchEntries(word, requestedLanguage, entries);
+    TranslationResult translations;
+    const bool translating = translationMode_->isChecked();
+    if (translating) {
+        language_ = requestedLanguage;
+        translations = translate(word, language_, requestedLanguage.isEmpty());
+    } else {
+        // A headword chosen from a reading/inflection keeps its matched entries.
+        lastResult_ = entries.isEmpty() ? repository_.search(word, requestedLanguage)
+                                        : repository_.searchEntries(word, requestedLanguage, entries);
+        originalWord_ = originalInput.isEmpty() ? word : originalInput;
+        language_ = lastResult_.language;
+        alternativeLanguage_ = lastResult_.alternativeLanguage;
+    }
     lastWord_ = word;
-    originalWord_ = originalInput.isEmpty() ? word : originalInput;
-    language_ = lastResult_.language;
-    alternativeLanguage_ = lastResult_.alternativeLanguage;
     if (record) { history_.add(word, language_); refreshHistory(); }
     // Highlight the searched word's history row (a new entry is inserted at the top, so the
     // previously selected row would otherwise stay highlighted at its shifted position).
@@ -524,8 +571,72 @@ void MainWindow::search(const QString &input, const QString &requestedLanguage, 
         if (match) historyList_->setCurrentItem(match);
         else { historyList_->setCurrentRow(-1); historyList_->clearSelection(); }
     }
-    updateKaikki();
-    showResult();
+    if (translating) {
+        showTranslation(word, translations);
+    } else {
+        updateKaikki();
+        showResult();
+    }
+}
+
+TranslationResult MainWindow::translate(const QString &word, QString &language, bool automatic) const {
+    if (language.isEmpty()) language = DictionaryRepository::preferredLanguage(word);
+    auto result = jmdict_.search(word, language);
+    if (automatic && result.error.isEmpty() && result.senses.isEmpty()) {
+        const auto other = language == "ja" ? QStringLiteral("en") : QStringLiteral("ja");
+        auto fallback = jmdict_.search(word, other);
+        if (!fallback.senses.isEmpty()) language = other;
+        return fallback;
+    }
+    return result;
+}
+
+void MainWindow::showTranslation(const QString &word, const TranslationResult &result) {
+    alternativeButton_->hide();
+    formOfButton_->hide();
+    spellingChoices_->hide();
+    spellingChoices_->clear();
+    QStringList lookupWords{word};
+    if (language_ == "ja") {
+        for (const auto &sense : result.senses) lookupWords.append(sense.words);
+    }
+    lookupWords.removeDuplicates();
+    searchKaikki_ = kaikkiText(lookupWords, language_);
+    results_->clear();
+    showKaikkiFor(nullptr);
+    showDetailsFor(nullptr);
+    heading_->show();
+    if (!result.error.isEmpty()) {
+        heading_->setText(result.error);
+        return;
+    }
+    const bool japanese = language_ == "ja";
+    heading_->setText(QStringLiteral("「%1」 %2 · %3語義").arg(word,
+        japanese ? QStringLiteral("和英（JMdict）") : QStringLiteral("英和（JMdict逆引き）"))
+        .arg(result.senses.size()));
+    if (result.senses.isEmpty()) {
+        heading_->setText(heading_->text() + QStringLiteral("\n訳が見つかりませんでした。"));
+        return;
+    }
+    for (const auto &sense : result.senses) {
+        const auto readings = sense.readings.join(QStringLiteral("／"));
+        const auto glosses = sense.glosses.join(QStringLiteral(" / "));
+        const auto words = sense.words.join(QStringLiteral("／"));
+        auto title = japanese ? QStringLiteral("%1（%2）").arg(words, readings) : glosses;
+        if (!sense.pos.isEmpty()) title += QStringLiteral(" [%1]").arg(sense.pos);
+        auto *group = new QTreeWidgetItem(results_, {title});
+        group->setToolTip(0, title);
+        for (const auto &candidate : japanese ? sense.glosses : sense.words) {
+            auto *item = new QTreeWidgetItem(group, {candidate});
+            item->setData(0, Qt::UserRole, candidate);
+            item->setData(0, Qt::UserRole + 3, japanese ? QStringLiteral("en") : QStringLiteral("ja"));
+            item->setData(0, Qt::UserRole + 2, QStringLiteral("%1\n読み：%2\n英訳：%3").arg(
+                japanese ? words : candidate,
+                japanese ? readings : sense.readingsByWord.value(candidate).join(QStringLiteral("／")),
+                glosses));
+        }
+        group->setExpanded(true);
+    }
 }
 
 void MainWindow::updateKaikki() {
@@ -534,7 +645,7 @@ void MainWindow::updateKaikki() {
     if (lastResult_.error.isEmpty()) {
         QStringList words{originalWord_, lastWord_};
         words.append(lastResult_.matchedWords);
-        searchKaikki_ = kaikkiText(words);
+        searchKaikki_ = kaikkiText(words, language_);
     }
     showKaikkiFor(nullptr);
 }
@@ -545,7 +656,8 @@ void MainWindow::showKaikkiFor(QTreeWidgetItem *item) {
     if (kaikki_.isOpen()) {
         if (item && item->parent()) {
             const auto word = item->data(0, Qt::UserRole).toString();
-            const auto body = kaikkiText({word});
+            const auto candidateLanguage = item->data(0, Qt::UserRole + 3).toString();
+            const auto body = kaikkiText({word}, candidateLanguage.isEmpty() ? language_ : candidateLanguage);
             text = QStringLiteral("Wiktionary / Kaikki\n\n") + (body.isEmpty()
                        ? QStringLiteral("「%1」の項目はありません。").arg(word) : body);
         } else if (!searchKaikki_.isEmpty()) {
@@ -570,6 +682,12 @@ void MainWindow::applyBottomSizes() {
     resultSplitter_->setSizes({qMax(total - bottomHeight_, results_->minimumHeight()), bottomHeight_});
 }
 void MainWindow::showDetailsFor(QTreeWidgetItem *item) {
+    if (translationMode_->isChecked()) {
+        detailsPanel_->setPlainText(item && item->parent()
+            ? item->data(0, Qt::UserRole + 2).toString()
+            : QStringLiteral("訳を選ぶと、JMdictの見出し・読み・英訳を表示します。"));
+        return;
+    }
     // The selected candidate's reading and meanings; queried for this one word only.
     const auto escape = [](const QString &text) {
         return text.toHtmlEscaped().replace('\n', QStringLiteral("<br>"));
@@ -600,8 +718,8 @@ void MainWindow::showDetailsFor(QTreeWidgetItem *item) {
     html += QStringLiteral("</p></qt>");
     detailsPanel_->setHtml(html);
 }
-QString MainWindow::kaikkiText(const QStringList &words) const {
-    const auto direct = kaikki_.search(words, language_);
+QString MainWindow::kaikkiText(const QStringList &words, const QString &language) const {
+    const auto direct = kaikki_.search(words, language);
     QHash<qint64, QStringList> paths;
     QHash<qint64, KaikkiEntry> targets;
     QVector<KaikkiEntry> additional;
@@ -609,7 +727,7 @@ QString MainWindow::kaikkiText(const QStringList &words) const {
     for (const auto &entry : direct) {
         for (const auto &sense : entry.senses) {
             for (const auto id : sense.targets) {
-                if (!targets.contains(id)) targets.insert(id, kaikki_.entry(id, language_));
+                if (!targets.contains(id)) targets.insert(id, kaikki_.entry(id, language));
                 const auto &target = targets[id];
                 if (sense.targets.size() != 1 || !target.id || target.senses.isEmpty()) continue;
                 if (!paths.contains(id)) additional.append(target);

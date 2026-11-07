@@ -161,6 +161,9 @@ if ($Deploy -or $RebuildDictionary) {
         throw '辞書DBが古いか不正なので再生成が必要です。README.md の「辞書の生成」を参照してください。既存DBは置き換えていません。'
     }
 }
+if ($Deploy -and (Test-Path -LiteralPath "$projectRoot/data/jmdict.sqlite")) {
+    Invoke-Checked $python @("$projectRoot/tools/build_jmdict.py", '--verify-only')
+}
 if ($Rebuild) { Remove-GeneratedDirectory $buildDir }
 Invoke-Checked cmake @('-S', $projectRoot, '-B', $buildDir, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', "-DCMAKE_PREFIX_PATH=$qtPrefix", "-DCMAKE_CXX_COMPILER=$mingwBin/g++.exe")
 $buildArgs = @('--build', $buildDir, '--parallel')
@@ -175,6 +178,9 @@ if ($Deploy) {
     Copy-Item -LiteralPath "$buildDir/ruigo.exe" -Destination $outputDir
     New-Item -ItemType Directory -Path "$outputDir/data" | Out-Null
     Copy-Item -LiteralPath "$projectRoot/data/dictionary.sqlite" -Destination "$outputDir/data"
+    if (Test-Path -LiteralPath "$projectRoot/data/jmdict.sqlite") {
+        Copy-Item -LiteralPath "$projectRoot/data/jmdict.sqlite" -Destination "$outputDir/data"
+    }
     Copy-Item -LiteralPath "$projectRoot/licenses" -Destination $outputDir -Recurse -Force
     Copy-Item -LiteralPath "$projectRoot/THIRD_PARTY_NOTICES.md" -Destination $outputDir -Force
     Invoke-Checked "$qtBin/windeployqt.exe" @('--qtpaths', "$qtBin/qtpaths.exe", '--release', '--compiler-runtime', '--exclude-plugins', 'qsqlmysql,qsqlpsql,qsqlodbc,qsqlibase,qsqlmimer', '--no-translations', '--no-system-d3d-compiler', '--no-opengl-sw', "$outputDir/ruigo.exe")

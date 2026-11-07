@@ -4,7 +4,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets Sql)
-add_library(ruigo_core src/DictionaryRepository.cpp src/KaikkiRepository.cpp src/SearchHistory.cpp)
+add_library(ruigo_core src/DictionaryRepository.cpp src/JmdictRepository.cpp src/KaikkiRepository.cpp src/SearchHistory.cpp)
 target_include_directories(ruigo_core PUBLIC src)
 target_link_libraries(ruigo_core PUBLIC Qt6::Sql)
 add_library(ruigo_ui src/MainWindow.cpp)
@@ -39,6 +39,10 @@ add_custom_target(ruigo_assets ALL
 if(EXISTS "${PROJECT_SOURCE_DIR}/data/dictionary.sqlite")
     add_custom_command(TARGET ruigo_assets POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${PROJECT_SOURCE_DIR}/data/dictionary.sqlite" "${RUIGO_DATA_DIR}/data/dictionary.sqlite")
+endif()
+if(EXISTS "${PROJECT_SOURCE_DIR}/data/jmdict.sqlite")
+    add_custom_command(TARGET ruigo_assets POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${PROJECT_SOURCE_DIR}/data/jmdict.sqlite" "${RUIGO_DATA_DIR}/data/jmdict.sqlite")
 endif()
 # Optional Kaikki DB for the development build only (the deploy step does not bundle it).
 if(EXISTS "${PROJECT_SOURCE_DIR}/data/kaikki.sqlite")

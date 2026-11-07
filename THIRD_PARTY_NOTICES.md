@@ -54,6 +54,18 @@ retained and shown as related words apart from synonyms. Examples, other
 relations and pronunciations are not exposed. No definitions or translations are generated.
 This conversion is not endorsed by the dictionary authors.
 
+## JMdict Japanese–English dictionary
+
+Ruigo's translation mode uses the Japanese and English components of the JMdict file.
+Copyright James William Breen and the Electronic Dictionary Research and Development Group (EDRDG).
+See the [JMdict project](https://www.edrdg.org/jmdict/j_jmdict.html) and
+the [EDRDG dictionary licence statement](https://www.edrdg.org/edrdg/newlic.html).
+
+The XML is converted to a separate SQLite database with search indexes and
+applicable spelling/reading pairs. The derived database is distributed under
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+See `licenses/jmdict-CC-BY-SA-4.0.txt`. The database records the source file's SHA-256.
+
 ## Optional Kaikki / Japanese Wiktionary data
 
 The app can read a locally generated `kaikki.sqlite`. It is built by

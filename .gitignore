@@ -8,5 +8,6 @@ mac/output/
 build/
 data/*.sqlite
 data/*.tmp
+/data/JMdict_e.gz
 /preview.png
 /test-results.txt

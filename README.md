@@ -73,6 +73,24 @@ python3 -m venv .venv
 
 変換に失敗した場合、既存の完成DBは保持します。アプリ使用中のDBの置き換えは避けてください。
 
+## JMdict翻訳辞書の生成
+
+検索欄の下の「類語」「翻訳」で切り替えます。翻訳は日本語の表記・読みから英訳を検索し、
+英語入力ではJMdictの英訳全体を逆引きします。英語の完全一致がない場合は大小文字を無視します。
+動詞の英訳は先頭の `to ` を省いても検索でき、直接一致した語義の後ろに追加表示します。
+和英では原表記を優先し、半角英数字を含む入力で一致がなければ全角表記も調べます。
+候補のコピーと入力履歴は共用です。Kaikki DBがある場合は検索語や選択した訳の補足も表示します。
+
+```powershell
+curl.exe -fL https://www.edrdg.org/pub/Nihongo/JMdict_e.gz -o data/JMdict_e.gz
+python tools/build_jmdict.py data/JMdict_e.gz
+python tools/build_jmdict.py --verify-only
+```
+
+公式の圧縮ファイルを定期的に取得して再生成します。生成した `data/jmdict.sqlite`（形式2）はビルド・配布時に同梱されます。
+形式1のDBを使用している場合は上のコマンドで再生成してください。辞書はWordNetやKaikkiと独立しており、
+JMdict DBがない場合は翻訳検索時にその旨を表示します。辞書生成後の検索にネット接続は不要です。
+
 ## Windowsビルド・起動
 
 Windowsの実行ファイル・ウィンドウアイコンは`assets/ruigo.ico`を埋め込みます。
