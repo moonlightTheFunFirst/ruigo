@@ -40,6 +40,8 @@ private:
     void showChoices(const QStringList &headwords, const QStringList &hints,
                      const QVector<QVector<qint64>> &entries);
     void refreshHistory();
+    void refreshPinned();
+    void pinWord(const QString &word, const QString &language);
     void editHistory();
     void deleteHistory();
     void showDisplaySettings();
@@ -58,6 +60,7 @@ private:
     bool restoringSearch_ = false;
     QSettings settings_;
     SearchHistory history_{settings_};
+    SearchHistory pinned_{settings_, SearchHistory::List::Pinned};
     DictionaryRepository repository_;
     JmdictRepository jmdict_;
     KaikkiRepository kaikki_;
@@ -81,6 +84,7 @@ private:
     QRadioButton *translationMode_;
     QLineEdit *input_;
     QListWidget *historyList_;
+    QListWidget *pinnedList_;
     QListWidget *spellingChoices_;
     QTreeWidget *results_;
     QLabel *heading_;

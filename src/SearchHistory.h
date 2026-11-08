@@ -8,7 +8,8 @@ struct HistoryEntry {
 };
 class SearchHistory {
 public:
-    explicit SearchHistory(QSettings &settings);
+    enum class List { History, Pinned };
+    explicit SearchHistory(QSettings &settings, List list = List::History);
     QVector<HistoryEntry> entries() const;
     QStringList words(const QString &language) const;
     bool add(const QString &word, const QString &language);
@@ -18,4 +19,6 @@ public:
 private:
     void save(const QVector<HistoryEntry> &entries);
     QSettings &settings_;
+    QString key_;
+    int limit_;
 };

@@ -220,9 +220,29 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
             QMenu menu;
             menu.addAction(editAction);
             menu.addAction(deleteAction);
-            menu.exec(historyList_->viewport()->mapToGlobal(point));
+            const auto word = item->data(Qt::UserRole + 1).toString();
+            const auto language = item->data(Qt::UserRole).toString();
+            auto *pin = menu.addAction(QStringLiteral("ピン留めに追加"));
+            if (menu.exec(historyList_->viewport()->mapToGlobal(point)) == pin) pinWord(word, language);
         });
-    leftLayout->addWidget(historyList_);
+    leftLayout->addWidget(historyList_, 2);
+    leftLayout->addWidget(new QLabel(QStringLiteral("ピン留め")));
+    pinnedList_ = new QListWidget;
+    pinnedList_->setObjectName("pinnedList");
+    pinnedList_->setContextMenuPolicy(Qt::CustomContextMenu);
+    leftLayout->addWidget(pinnedList_, 1);
+    connect(pinnedList_, &QListWidget::customContextMenuRequested, this, [this](const QPoint &point) {
+        const auto *item = pinnedList_->itemAt(point);
+        if (!item) return;
+        const auto word = item->data(Qt::UserRole + 1).toString();
+        const auto language = item->data(Qt::UserRole).toString();
+        QMenu menu;
+        auto *remove = menu.addAction(QStringLiteral("ピン留めを解除"));
+        if (menu.exec(pinnedList_->viewport()->mapToGlobal(point)) == remove) {
+            pinned_.remove(word, language);
+            refreshPinned();
+        }
+    });
     auto *right = new QWidget(splitter_);
     right->setMinimumWidth(320);
     auto *rightLayout = new QVBoxLayout(right);
@@ -422,6 +442,10 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         [searchHistoryItem](QListWidgetItem *current, QListWidgetItem *) { searchHistoryItem(current); });
     connect(historyList_, &QListWidget::itemClicked, this, searchHistoryItem);
     connect(historyList_, &QListWidget::itemActivated, this, searchHistoryItem);
+    connect(pinnedList_, &QListWidget::currentItemChanged, this,
+        [searchHistoryItem](QListWidgetItem *current, QListWidgetItem *) { searchHistoryItem(current); });
+    connect(pinnedList_, &QListWidget::itemClicked, this, searchHistoryItem);
+    connect(pinnedList_, &QListWidget::itemActivated, this, searchHistoryItem);
     // Selecting a candidate (mouse or keyboard) switches the Kaikki panel and the details to that word.
     connect(results_, &QTreeWidget::currentItemChanged, this,
         [this](QTreeWidgetItem *current, QTreeWidgetItem *) { showKaikkiFor(current); showDetailsFor(current); });
@@ -449,12 +473,16 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         auto *copy = menu.addAction(QStringLiteral("コピー"));
         copy->setShortcut(QKeySequence::Copy); // Shown as a hint; the tree's own action handles the key.
         auto *find = menu.addAction(QStringLiteral("この単語で検索"));
+        auto *pin = menu.addAction(QStringLiteral("ピン留めに追加"));
+        const auto candidateLanguage = item->data(0, Qt::UserRole + 3).toString();
+        const auto language = candidateLanguage.isEmpty() ? language_ : candidateLanguage;
         auto *selected = menu.exec(position);
         if (selected == copy) copyWord(item);
-        else if (selected == find) search(word, translationMode_->isChecked()
-            ? (language_ == "ja" ? QStringLiteral("en") : QStringLiteral("ja")) : language_);
+        else if (selected == find) search(word, language);
+        else if (selected == pin) pinWord(word, language);
     });
     refreshHistory();
+    refreshPinned();
     restoreGeometry(settings_.value("window/geometry").toByteArray());
     bool visible = false;
     for (auto *screen : QGuiApplication::screens())
@@ -598,6 +626,23 @@ void MainWindow::refreshHistory() {
     for (int i = 0; i < historyList_->count(); ++i)
         historyList_->item(i)->setFlags(historyList_->item(i)->flags() | Qt::ItemIsEditable);
 }
+void MainWindow::refreshPinned() {
+    const QSignalBlocker blocker(pinnedList_);
+    pinnedList_->clear();
+    for (const auto &entry : pinned_.entries()) {
+        auto *item = new QListWidgetItem(QStringLiteral("%1  [%2]").arg(
+            entry.word, DictionaryRepository::languageName(entry.language)), pinnedList_);
+        item->setData(Qt::UserRole, entry.language);
+        item->setData(Qt::UserRole + 1, entry.word);
+    }
+}
+
+void MainWindow::pinWord(const QString &word, const QString &language) {
+    if (!pinned_.add(word, language)) return;
+    refreshPinned();
+    statusBar()->showMessage(QStringLiteral("「%1」をピン留めしました").arg(word), 2500);
+}
+
 void MainWindow::editHistory() {
     auto *item = historyList_->currentItem();
     if (!item) return;

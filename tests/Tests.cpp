@@ -516,6 +516,51 @@ private slots:
         window.close();
         settings.setValue("history/entries", QStringList{});
     }
+    void pinnedWords() {
+        QSettings settings;
+        const QStringList historyEntries{"en:AI", "ja:AI"};
+        settings.setValue("history/entries", historyEntries);
+        settings.remove("pinned/entries");
+        const auto pickLastMenuAction = [] {
+            QTimer::singleShot(0, [] {
+                auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                if (!menu || menu->actions().isEmpty()) return;
+                menu->setActiveAction(menu->actions().last());
+                QTest::keyClick(menu, Qt::Key_Return);
+            });
+        };
+        {
+            MainWindow window(fixture_);
+            window.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&window));
+            auto *history = window.findChild<QListWidget *>("historyList");
+            auto *pins = window.findChild<QListWidget *>("pinnedList");
+            for (const int row : {0, 1, 0}) {
+                pickLastMenuAction();
+                emit history->customContextMenuRequested(history->visualItemRect(history->item(row)).center());
+            }
+            QCOMPARE(pins->count(), 2);
+            QCOMPARE(settings.value("pinned/entries").toStringList(), (QStringList{"ja:AI", "en:AI"}));
+            QCOMPARE(settings.value("history/entries").toStringList(), historyEntries);
+        }
+        MainWindow reopened(fixture_);
+        reopened.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&reopened));
+        auto *pins = reopened.findChild<QListWidget *>("pinnedList");
+        auto *heading = reopened.findChild<QLabel *>("resultHeading");
+        QCOMPARE(pins->count(), 2);
+        pins->setCurrentRow(0);
+        QVERIFY(heading->text().contains("日本語で検索"));
+        pins->setCurrentRow(1);
+        QVERIFY(heading->text().contains("英語で検索"));
+        pickLastMenuAction();
+        emit pins->customContextMenuRequested(pins->visualItemRect(pins->item(1)).center());
+        QCOMPARE(pins->count(), 1);
+        QCOMPARE(settings.value("pinned/entries").toStringList(), QStringList{"ja:AI"});
+        QCOMPARE(settings.value("history/entries").toStringList(), historyEntries);
+        settings.remove("pinned/entries");
+        settings.setValue("history/entries", QStringList{});
+    }
     void historyAutoScroll() {
         QSettings settings;
         QStringList entries{"ja:美しい"};
@@ -1646,6 +1691,15 @@ private slots:
         QCOMPARE(window.findChild<QLineEdit *>("searchInput")->text(), QString("T-shirt"));
         QVERIFY(heading->text().contains("英和（JMdict逆引き）"));
         QCOMPARE(settings.value("history/entries"), savedHistory);
+        settings.setValue("pinned/entries", QStringList{"en:T-shirt"});
+        {
+            MainWindow reopened(path);
+            QVERIFY(reopened.findChild<QRadioButton *>("translationMode")->isChecked());
+            reopened.findChild<QListWidget *>("pinnedList")->setCurrentRow(0);
+            QVERIFY(reopened.findChild<QLabel *>("resultHeading")->text().contains("英和（JMdict逆引き）"));
+            QCOMPARE(settings.value("history/entries"), savedHistory);
+        }
+        settings.remove("pinned/entries");
         settings.remove("search/translationMode");
         settings.setValue("history/entries", QStringList{});
     }
