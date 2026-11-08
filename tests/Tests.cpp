@@ -56,10 +56,12 @@ private slots:
             QVERIFY2(db.open(), qPrintable(db.lastError().text()));
             QSqlQuery q(db);
             const QStringList sql = {
-                "PRAGMA user_version=5",
+                "PRAGMA user_version=6",
                 "CREATE TABLE lemmas(id INTEGER PRIMARY KEY,word TEXT,language TEXT,forms_json TEXT DEFAULT '[]')",
                 "CREATE TABLE synsets(id TEXT PRIMARY KEY,source TEXT)",
                 "CREATE TABLE synset_definitions(synset_id TEXT,language TEXT,definition TEXT)",
+                "CREATE TABLE synset_examples(synset_id TEXT,language TEXT,position INTEGER,text TEXT,source TEXT)",
+                "INSERT INTO synset_examples VALUES ('s1','ja',0,'用例 <現在>',''),('s3','ja',0,'別の意味の用例',''),('s1','en',0,'English example','')",
                 "CREATE TABLE senses(synset_id TEXT,lemma_id INTEGER)",
                 "INSERT INTO lemmas(id,word,language) VALUES (1,'美しい','ja'),(2,'綺麗','ja'),(3,'綺麗','ja'),(4,'麗しい','ja'),(5,'beautiful','en'),(6,'pretty','en')",
                 "INSERT INTO synsets VALUES ('s1','test'),('s2','test')",
@@ -1049,6 +1051,9 @@ private slots:
         QVERIFY(text.contains("読み：きれい"));
         QVERIFY(text.contains("現在の意味"));
         QVERIFY(text.contains("テスト用の意味"));
+        QVERIFY(text.contains("用例 <現在>"));
+        QVERIFY(text.contains("別の意味の用例"));
+        QVERIFY(!text.contains("English example"));
         QVERIFY(text.contains("別の意味 <テスト> & 確認")); // Escaped HTML is shown as text.
         QVERIFY(text.contains("2. 説明なし"));
         QVERIFY(text.contains("3. 説明なし"));
@@ -1539,8 +1544,10 @@ private slots:
                 QVERIFY(run(old, "run").contains("再生成"));
             }
             const QStringList sql = {
-                "PRAGMA user_version=2",
+                "PRAGMA user_version=3",
                 "CREATE TABLE senses(id INTEGER PRIMARY KEY,entry INTEGER,position INTEGER,pos TEXT)",
+                "CREATE TABLE sense_examples(sense INTEGER,position INTEGER,japanese TEXT,english TEXT,source TEXT)",
+                "INSERT INTO sense_examples VALUES (1,0,'公園で走った。','I ran in the park.','https://tatoeba.org/sentences/show/1')",
                 "CREATE TABLE forms(sense INTEGER,word TEXT,reading TEXT)",
                 "CREATE TABLE glosses(sense INTEGER,position INTEGER,text TEXT,exact TEXT,folded TEXT,bare_verb TEXT)",
                 "INSERT INTO senses VALUES (1,1,1,'verb'),(2,2,1,'noun'),(3,3,1,'noun'),(4,4,1,'noun'),(5,5,1,'noun')",
@@ -1601,6 +1608,7 @@ private slots:
         QVERIFY(panel->toPlainText().contains("走るの補足"));
         const auto details = window.findChild<QTextBrowser *>("wordDetails")->toPlainText();
         QVERIFY(details.contains("はしる") && details.contains("to run"));
+        QVERIFY(details.contains("公園で走った。") && details.contains("I ran in the park."));
         tree->setCurrentItem(tree->topLevelItem(1));
         QVERIFY(panel->toPlainText().contains("run supplement"));
 

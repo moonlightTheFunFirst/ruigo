@@ -23,12 +23,31 @@ void JmdictRepository::open(const QString &path) {
     db_.setDatabaseName(path);
     if (db_.open()) {
         QSqlQuery check(db_);
-        if (check.exec("PRAGMA user_version") && check.next() && check.value(0).toInt() == 2 &&
+        if (check.exec("PRAGMA user_version") && check.next() && check.value(0).toInt() == 3 &&
             check.exec("SELECT s.entry,s.position,s.pos,f.word,f.reading,g.text,g.exact,g.folded,g.bare_verb "
-                       "FROM senses s JOIN forms f ON f.sense=s.id JOIN glosses g ON g.sense=s.id LIMIT 0"))
+                       "FROM senses s JOIN forms f ON f.sense=s.id JOIN glosses g ON g.sense=s.id LIMIT 0") &&
+            check.exec("SELECT sense,position,japanese,english,source FROM sense_examples LIMIT 0"))
             return;
     }
     error_ = QStringLiteral("JMdict辞書を読み込めませんでした。辞書DBを再生成してください。");
+}
+
+QStringList JmdictRepository::examples(qint64 senseId) const {
+    if (!error_.isEmpty() || !db_.isOpen() || senseId <= 0) return {};
+    QSqlQuery query(db_);
+    query.prepare("SELECT japanese,english,source FROM sense_examples WHERE sense=? ORDER BY position");
+    query.addBindValue(senseId);
+    QStringList examples;
+    if (!query.exec()) return examples;
+    while (query.next()) {
+        QStringList lines;
+        for (int column = 0; column < 3; ++column) {
+            const auto value = query.value(column).toString();
+            if (!value.isEmpty()) lines.append(value);
+        }
+        examples.append(lines.join('\n'));
+    }
+    return examples;
 }
 
 TranslationResult JmdictRepository::search(const QString &input, const QString &language) const {

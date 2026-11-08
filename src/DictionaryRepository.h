@@ -46,10 +46,12 @@ struct SearchResult {
 struct WordMeaning {
     QString id;
     QString definition;
+    QString examples;
 };
 struct WordDetails {
     QStringList readings;
     QVector<WordMeaning> otherMeanings;
+    QString currentExamples;
     QString error;
     bool showReadings = false;
 };

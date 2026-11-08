@@ -28,7 +28,7 @@ The application database is a conversion of the supplied WN-LMF 1.4 package.
 Its original license, including disclaimer, is in `licenses/wnja-LICENSE`.
 Dictionary readings are retained and also used to look up headwords. Of the semantic relations,
 only "similar" synset relations are included, shown as related words apart from
-synonyms. Examples and other relations are not included. No definitions are generated.
+synonyms. Synset examples are retained. No definitions are generated.
 
 Build-time dependency: OMW English WordNet `omw-en:2.0`, downloaded through `wn`.
 This dependency is not exported; English search uses OEWN below.
@@ -50,8 +50,8 @@ The WN-LMF data is converted to application-specific SQLite: original entry
 IDs, parts of speech, synsets and English definitions are retained; search
 keys and source namespaces are added. The irregular inflected forms recorded in
 the data (e.g. went -> go) are indexed for lookup. Only "similar" synset relations are
-retained and shown as related words apart from synonyms. Examples, other
-relations and pronunciations are not exposed. No definitions or translations are generated.
+retained and shown as related words apart from synonyms. Synset examples and
+their source metadata are retained. No definitions or translations are generated.
 This conversion is not endorsed by the dictionary authors.
 
 ## JMdict Japanese–English dictionary
@@ -65,6 +65,12 @@ The XML is converted to a separate SQLite database with search indexes and
 applicable spelling/reading pairs. The derived database is distributed under
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 See `licenses/jmdict-CC-BY-SA-4.0.txt`. The database records the source file's SHA-256.
+
+Example sentences from the [EDRDG example edition](https://www.edrdg.org/pub/Nihongo/)
+come from [Tatoeba](https://tatoeba.org/) contributors under
+[CC BY 2.0 France](https://creativecommons.org/licenses/by/2.0/fr/).
+Ruigo retains the Japanese and English texts and shows the original Tatoeba
+sentence URL supplied by JMdict, where the sentence and contributor credits can be found.
 
 ## Optional Kaikki / Japanese Wiktionary data
 

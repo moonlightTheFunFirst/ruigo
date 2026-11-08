@@ -31,6 +31,7 @@ private:
     void showKaikkiFor(QTreeWidgetItem *item);
     QString kaikkiText(const QStringList &words, const QString &language) const;
     void showDetailsFor(QTreeWidgetItem *item);
+    QString translationExamples(qint64 senseId) const;
     void showHistoryDetails(const QString &word, const QString &language,
                             const TranslationResult *translations = nullptr);
     QString wordDetailsHtml(const QString &word, const QString &language, const QString &synset = {},

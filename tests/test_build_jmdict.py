@@ -13,7 +13,9 @@ XML = """<JMdict><entry><ent_seq>1</ent_seq>
 <r_ele><reb>おもて</reb><re_restr>表</re_restr></r_ele>
 <r_ele><reb>うら</reb><re_restr>裏</re_restr></r_ele>
 <r_ele><reb>かな</reb><re_nokanji/></r_ele>
-<sense><pos>verb</pos><stagk>表</stagk><gloss>to Run</gloss><gloss xml:lang="fre">courir</gloss></sense>
+<sense><pos>verb</pos><stagk>表</stagk><gloss>to Run</gloss><gloss xml:lang="fre">courir</gloss>
+<example><ex_srce exsrc_type="tat">42</ex_srce><ex_sent xml:lang="jpn">例文。</ex_sent>
+<ex_sent xml:lang="eng">Example.</ex_sent></example></sense>
 <sense><stagr>うら</stagr><gloss>back</gloss></sense>
 <sense><stagr>かな</stagr><gloss>kana</gloss></sense>
 </entry></JMdict>"""
@@ -37,7 +39,9 @@ class JmdictBuildTest(unittest.TestCase):
                     (2, "verb", "裏", "うら", "back", "back", None),
                     (3, "verb", "かな", "かな", "kana", "kana", None),
                 ])
-                db.execute("PRAGMA user_version=1")
+                self.assertEqual(db.execute("SELECT * FROM sense_examples").fetchall(),
+                                 [(1, 0, "例文。", "Example.", "https://tatoeba.org/sentences/show/42")])
+                db.execute("PRAGMA user_version=2")
                 with self.assertRaisesRegex(ValueError, "version"):
                     build_jmdict.verify(db)
 

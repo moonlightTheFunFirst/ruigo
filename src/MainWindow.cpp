@@ -665,7 +665,7 @@ void MainWindow::showHistoryDetails(const QString &word, const QString &language
         for (const auto &sense : result.senses) {
             sections.append(QStringLiteral("%1\n読み：%2\n英訳：%3").arg(
                 sense.words.join(QStringLiteral("／")), sense.readings.join(QStringLiteral("／")),
-                sense.glosses.join(QStringLiteral(" / "))));
+                sense.glosses.join(QStringLiteral(" / "))) + translationExamples(sense.id));
         }
         if (!result.error.isEmpty()) sections.append(result.error);
         else if (result.senses.isEmpty()) sections.append(QStringLiteral("訳が見つかりませんでした。"));
@@ -730,6 +730,7 @@ void MainWindow::showTranslation(const QString &word, const TranslationResult &r
             auto *item = new QTreeWidgetItem(group, {candidate});
             item->setData(0, Qt::UserRole, candidate);
             item->setData(0, Qt::UserRole + 3, japanese ? QStringLiteral("en") : QStringLiteral("ja"));
+            item->setData(0, Qt::UserRole + 4, sense.id);
             item->setData(0, Qt::UserRole + 2, QStringLiteral("%1\n読み：%2\n英訳：%3").arg(
                 japanese ? words : candidate,
                 japanese ? readings : sense.readingsByWord.value(candidate).join(QStringLiteral("／")),
@@ -784,7 +785,8 @@ void MainWindow::applyBottomSizes() {
 void MainWindow::showDetailsFor(QTreeWidgetItem *item) {
     if (translationMode_->isChecked()) {
         detailsPanel_->setPlainText(item && item->parent()
-            ? item->data(0, Qt::UserRole + 2).toString()
+            ? item->data(0, Qt::UserRole + 2).toString() +
+                translationExamples(item->data(0, Qt::UserRole + 4).toLongLong())
             : QStringLiteral("訳を選ぶと、JMdictの見出し・読み・英訳を表示します。"));
         return;
     }
@@ -795,6 +797,11 @@ void MainWindow::showDetailsFor(QTreeWidgetItem *item) {
     const auto word = item->data(0, Qt::UserRole).toString();
     detailsPanel_->setHtml(wordDetailsHtml(word, language_, item->data(0, Qt::UserRole + 1).toString(),
                                           item->data(0, Qt::UserRole + 2).toString()));
+}
+QString MainWindow::translationExamples(qint64 senseId) const {
+    const auto examples = jmdict_.examples(senseId);
+    return examples.isEmpty() ? QString{} : QStringLiteral("\n\n用例・例文\n") +
+        examples.join(QStringLiteral("\n\n"));
 }
 QString MainWindow::wordDetailsHtml(const QString &word, const QString &language, const QString &synset,
                                     const QString &currentDefinition) const {
@@ -808,19 +815,23 @@ QString MainWindow::wordDetailsHtml(const QString &word, const QString &language
     const auto definition = [&](const QString &text) {
         return escape(text.trimmed().isEmpty() ? QStringLiteral("説明なし") : text);
     };
+    const auto examples = [&](const QString &text) {
+        return text.isEmpty() ? QString{} : QStringLiteral("<br><b>用例・例文</b><br>") + escape(text);
+    };
     QString html = QStringLiteral("<b>%1</b>").arg(escape(word));
     if (details.showReadings)
         html += QStringLiteral("<br>読み：%1").arg(details.readings.isEmpty()
             ? QStringLiteral("未収録") : escape(details.readings.join(QStringLiteral("／"))));
     if (!synset.isEmpty()) {
         html += QStringLiteral("<p><b>現在の意味</b><br>%1</p><p><b>ほかに収録されている意味</b><br>")
-            .arg(definition(currentDefinition));
+            .arg(definition(currentDefinition) + examples(details.currentExamples));
     } else {
         html += QStringLiteral("<p><b>収録されている意味</b><br>");
     }
     QStringList others;
     for (const auto &meaning : details.otherMeanings)
-        others.append(QStringLiteral("%1. %2").arg(others.size() + 1).arg(definition(meaning.definition)));
+        others.append(QStringLiteral("%1. %2").arg(others.size() + 1)
+            .arg(definition(meaning.definition) + examples(meaning.examples)));
     html += others.isEmpty() ? QStringLiteral("なし") : others.join(QStringLiteral("<br><br>"));
     return html + QStringLiteral("</p>");
 }

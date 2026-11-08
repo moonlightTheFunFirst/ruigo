@@ -9,5 +9,6 @@ build/
 data/*.sqlite
 data/*.tmp
 /data/JMdict_e.gz
+/data/JMdict_e_examp.gz
 /preview.png
 /test-results.txt

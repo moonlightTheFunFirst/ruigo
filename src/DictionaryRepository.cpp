@@ -42,7 +42,7 @@ bool DictionaryRepository::open(const QString &path) {
         return false;
     }
     QSqlQuery check(db_);
-    if (!check.exec("PRAGMA user_version") || !check.next() || check.value(0).toInt() != 5) {
+    if (!check.exec("PRAGMA user_version") || !check.next() || check.value(0).toInt() != 6) {
         error_ = QStringLiteral("辞書DBの形式が未対応、または破損しています。日英辞書DBを再生成してください。");
     } else if (!check.exec("SELECT l.word,l.language,l.forms_json,l.search_key,src.reading_mode,s.id,s.source,d.definition,d.language,se.lemma_id "
                            "FROM lemmas l JOIN sources src ON src.id=l.source JOIN senses se ON se.lemma_id=l.id "
@@ -54,6 +54,8 @@ bool DictionaryRepository::open(const QString &path) {
         error_ = QStringLiteral("辞書DBの別表記索引が不正です。再生成してください。");
     if (error_.isEmpty() && !check.exec("SELECT synset_id,target_id,rel_type FROM synset_relations LIMIT 0"))
         error_ = QStringLiteral("辞書DBの関連語データが不正です。再生成してください。");
+    if (error_.isEmpty() && !check.exec("SELECT synset_id,language,position,text,source FROM synset_examples LIMIT 0"))
+        error_ = QStringLiteral("辞書DBの用例データが不正です。再生成してください。");
     check.finish();
     if (!error_.isEmpty()) db_.close();
     return error_.isEmpty();
@@ -404,7 +406,10 @@ WordDetails DictionaryRepository::wordDetails(const QString &word, const QString
     QSqlQuery query(db_);
     // Keep readings and other senses tied to entries belonging to this meaning,
     // rather than mixing unrelated homographs with the same spelling.
-    query.prepare("SELECT DISTINCT l.forms_json, s.synset_id, COALESCE(d.definition,''), src.reading_mode "
+    query.prepare("SELECT DISTINCT l.forms_json, s.synset_id, COALESCE(d.definition,''), src.reading_mode, "
+        "(SELECT group_concat(line,char(10)) FROM (SELECT text || "
+        "CASE WHEN source='' THEN '' ELSE ' — ' || source END AS line FROM synset_examples "
+        "WHERE synset_id=s.synset_id AND language=:language ORDER BY position)) "
         "FROM lemmas l JOIN sources src ON src.id=l.source JOIN senses s ON s.lemma_id=l.id "
         "LEFT JOIN synset_definitions d ON d.synset_id=s.synset_id AND d.language=:language "
         "WHERE l.word=:word AND l.language=:language "
@@ -437,7 +442,9 @@ WordDetails DictionaryRepository::wordDetails(const QString &word, const QString
             const auto definition = query.value(2).toString().trimmed();
             const auto id = query.value(1).toString();
             if (result.otherMeanings.isEmpty() || result.otherMeanings.last().id != id)
-                result.otherMeanings.append({id, definition});
+                result.otherMeanings.append({id, definition, query.value(4).toString()});
+        } else {
+            result.currentExamples = query.value(4).toString();
         }
     }
     const auto kana = [](QString text) {

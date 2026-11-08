@@ -82,14 +82,16 @@ python3 -m venv .venv
 候補のコピーと入力履歴は共用です。Kaikki DBがある場合は検索語や選択した訳の補足も表示します。
 
 ```powershell
-curl.exe -fL https://www.edrdg.org/pub/Nihongo/JMdict_e.gz -o data/JMdict_e.gz
-python tools/build_jmdict.py data/JMdict_e.gz
+curl.exe -fL https://www.edrdg.org/pub/Nihongo/JMdict_e_examp.gz -o data/JMdict_e_examp.gz
+python tools/build_jmdict.py data/JMdict_e_examp.gz
 python tools/build_jmdict.py --verify-only
 ```
 
-公式の圧縮ファイルを定期的に取得して再生成します。生成した `data/jmdict.sqlite`（形式2）はビルド・配布時に同梱されます。
-形式1のDBを使用している場合は上のコマンドで再生成してください。辞書はWordNetやKaikkiと独立しており、
+公式の圧縮ファイルを定期的に取得して再生成します。生成した `data/jmdict.sqlite`（形式3）はビルド・配布時に同梱されます。
+旧形式のDBを使用している場合は上のコマンドで再生成してください。通常版の原本も使えますが、JMdictの例文表示には例文付き版が必要です。辞書はWordNetやKaikkiと独立しており、
 JMdict DBがない場合は翻訳検索時にその旨を表示します。辞書生成後の検索にネット接続は不要です。
+
+類語・翻訳の詳細欄では、収録のある語義に用例・例文を表示します。日英WordNetの用例を表示するには、`tools/build_dictionary.py` で `dictionary.sqlite` を形式6に再生成してください。
 
 ## Windowsビルド・起動
 

@@ -15,7 +15,7 @@ from wn import lmf
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = """
 PRAGMA foreign_keys=ON;
-PRAGMA user_version=5;
+PRAGMA user_version=6;
 CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE sources(id TEXT PRIMARY KEY,version TEXT NOT NULL,language TEXT NOT NULL,url TEXT,license TEXT,reading_mode TEXT NOT NULL);
 CREATE TABLE synsets(id TEXT PRIMARY KEY,source TEXT NOT NULL REFERENCES sources(id),original_id TEXT NOT NULL,pos TEXT,ili TEXT);
@@ -25,6 +25,7 @@ CREATE INDEX idx_lemmas_language_key ON lemmas(language,search_key);
 CREATE TABLE lemma_aliases(lemma_id INTEGER NOT NULL REFERENCES lemmas(id),language TEXT NOT NULL,word TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('spelling','reading','inflection')),PRIMARY KEY(lemma_id,kind,word));
 CREATE INDEX idx_aliases_language_word ON lemma_aliases(language,word);
 CREATE TABLE synset_definitions(synset_id TEXT NOT NULL REFERENCES synsets(id),language TEXT NOT NULL,definition TEXT NOT NULL,PRIMARY KEY(synset_id,language));
+CREATE TABLE synset_examples(synset_id TEXT NOT NULL REFERENCES synsets(id),language TEXT NOT NULL,position INTEGER NOT NULL,text TEXT NOT NULL,source TEXT NOT NULL,PRIMARY KEY(synset_id,language,position));
 CREATE TABLE senses(source TEXT NOT NULL REFERENCES sources(id),original_id TEXT NOT NULL,synset_id TEXT NOT NULL REFERENCES synsets(id),lemma_id INTEGER NOT NULL REFERENCES lemmas(id),PRIMARY KEY(source,original_id));
 CREATE INDEX idx_senses_lemma ON senses(lemma_id);
 CREATE INDEX idx_senses_synset ON senses(synset_id);
@@ -64,7 +65,7 @@ def search_key(word, language):
 
 def validate(path):
     with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
-        if db.execute("PRAGMA user_version").fetchone()[0] != 5:
+        if db.execute("PRAGMA user_version").fetchone()[0] != 6:
             raise ValueError("Dictionary schema is old; regenerate the bilingual DB")
         if db.execute("PRAGMA integrity_check").fetchone() != ("ok",):
             raise ValueError("SQLite integrity check failed")
@@ -78,6 +79,12 @@ def validate(path):
                       for table in ("lemmas", "synsets", "senses")}
             counts["synset_definitions"] = db.execute(
                 "SELECT count(*) FROM synset_definitions d JOIN synsets s ON s.id=d.synset_id WHERE s.source=?", (source,)).fetchone()[0]
+            examples = db.execute(
+                "SELECT count(*) FROM synset_examples e JOIN synsets s ON s.id=e.synset_id "
+                "JOIN sources src ON src.id=s.source WHERE s.source=? AND e.language=src.language AND trim(e.text)<>''",
+                (source,)).fetchone()[0]
+            if examples != {"wnja:2.1": 35359, "oewn:2025": 49596}[source]:
+                raise ValueError(f"{source}: unexpected example count ({examples})")
             counts["similar"] = db.execute(
                 "SELECT count(*) FROM synset_relations r JOIN synsets s ON s.id=r.synset_id WHERE r.rel_type='similar' AND s.source=?", (source,)).fetchone()[0]
             if counts != expected:
@@ -154,6 +161,11 @@ def import_lexicon(db, source, expected_id, language, reading_mode):
                  if d.get("language", language) == language and d["text"].strip()]
         if texts:
             db.execute("INSERT INTO synset_definitions VALUES (?,?,?)", (sid(synset["id"]), language, "\n".join(dict.fromkeys(texts))))
+        db.executemany("INSERT INTO synset_examples VALUES (?,?,?,?,?)", (
+            (sid(synset["id"]), language, position, example["text"].strip(),
+             (example.get("meta") or {}).get("source", ""))
+            for position, example in enumerate(synset.get("examples", []))
+            if example.get("language", language) == language and example["text"].strip()))
     for entry in lexicon["entries"]:
         lemma = entry["lemma"]
         word = lemma["writtenForm"]

@@ -12,7 +12,7 @@ import unicodedata
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = 2
+VERSION = 3
 
 
 def replace_with_retry(source, target):
@@ -35,6 +35,7 @@ def verify(db):
     if db.execute("PRAGMA foreign_key_check").fetchone():
         raise ValueError("JMdict database contains invalid references")
     db.execute("SELECT key,value FROM metadata LIMIT 0")
+    db.execute("SELECT sense,position,japanese,english,source FROM sense_examples LIMIT 0")
     db.execute("""SELECT s.entry,s.position,s.pos,f.word,f.reading,g.text,g.exact,g.folded,g.bare_verb
                   FROM senses s JOIN forms f ON f.sense=s.id JOIN glosses g ON g.sense=s.id LIMIT 0""")
     counts = {table: db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
@@ -60,6 +61,9 @@ def build(source, output):
                 CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                 CREATE TABLE senses(id INTEGER PRIMARY KEY,entry INTEGER NOT NULL,
                     position INTEGER NOT NULL,pos TEXT NOT NULL);
+                CREATE TABLE sense_examples(sense INTEGER NOT NULL REFERENCES senses(id),
+                    position INTEGER NOT NULL,japanese TEXT NOT NULL,english TEXT NOT NULL,
+                    source TEXT NOT NULL,PRIMARY KEY(sense,position));
                 CREATE TABLE forms(sense INTEGER NOT NULL REFERENCES senses(id),
                     word TEXT NOT NULL, reading TEXT NOT NULL, PRIMARY KEY(sense,word,reading));
                 CREATE TABLE glosses(sense INTEGER NOT NULL REFERENCES senses(id),
@@ -123,6 +127,20 @@ def insert_entry(db, entry):
         sid = db.execute("INSERT INTO senses(entry,position,pos) VALUES (?,?,?)",
                          (number, position, " / ".join(pos))).lastrowid
         db.executemany("INSERT INTO forms VALUES (?,?,?)", ((sid, *form) for form in forms))
+        for i, example in enumerate(sense.findall("example")):
+            sentences = {"jpn": [], "eng": []}
+            for sentence in example.findall("ex_sent"):
+                lang = sentence.get("{http://www.w3.org/XML/1998/namespace}lang", "eng")
+                text = "".join(sentence.itertext()).strip()
+                if lang in sentences and text:
+                    sentences[lang].append(text)
+            source = example.find("ex_srce")
+            source_id = (source.text or "").strip() if source is not None else ""
+            if source is not None and source.get("exsrc_type") == "tat" and source_id.isascii() and source_id.isdecimal():
+                source_id = "https://tatoeba.org/sentences/show/" + source_id
+            if any(sentences.values()):
+                db.execute("INSERT INTO sense_examples VALUES (?,?,?,?,?)",
+                           (sid, i, "\n".join(sentences["jpn"]), "\n".join(sentences["eng"]), source_id))
         for i, gloss in enumerate(glosses):
             exact = unicodedata.normalize("NFC", gloss)
             folded = exact.lower()

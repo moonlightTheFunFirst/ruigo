@@ -22,6 +22,7 @@ public:
     ~JmdictRepository();
     void open(const QString &path);
     TranslationResult search(const QString &word, const QString &language) const;
+    QStringList examples(qint64 senseId) const;
 private:
     QSqlDatabase db_;
     QString error_;
