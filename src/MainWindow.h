@@ -13,7 +13,6 @@ class QPushButton;
 class QCheckBox;
 class QRadioButton;
 class QSplitter;
-class QPlainTextEdit;
 class QTextBrowser;
 class MainWindow : public QMainWindow {
 public:
@@ -29,7 +28,7 @@ private:
     TranslationResult translate(const QString &word, QString &language, bool automatic) const;
     void showTranslation(const QString &word, const TranslationResult &result);
     void showKaikkiFor(QTreeWidgetItem *item);
-    QString kaikkiText(const QStringList &words, const QString &language) const;
+    QString kaikkiHtml(const QStringList &words, const QString &language) const;
     void showDetailsFor(QTreeWidgetItem *item);
     QString translationExamples(qint64 senseId) const;
     void showHistoryDetails(const QString &word, const QString &language,
@@ -67,8 +66,8 @@ private:
     SearchResult lastResult_;
     QString lastWord_;
     QString originalWord_;
-    QString searchKaikki_; // Kaikki text for the search word; empty when there is none.
-    QPlainTextEdit *kaikkiPanel_;
+    QString searchKaikki_; // Kaikki HTML for the search word; empty when there is none.
+    QTextBrowser *kaikkiPanel_;
     QTextBrowser *detailsPanel_;  // Reading and meanings of the selected candidate.
     QSplitter *resultSplitter_;   // Results above, the bottom row below.
     QSplitter *bottomSplitter_;   // Kaikki panel on the left, details on the right.

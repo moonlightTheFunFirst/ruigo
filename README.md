@@ -92,6 +92,7 @@ python tools/build_jmdict.py --verify-only
 JMdict DBがない場合は翻訳検索時にその旨を表示します。辞書生成後の検索にネット接続は不要です。
 
 類語・翻訳の詳細欄では、収録のある語義に用例・例文を表示します。日英WordNetの用例を表示するには、`tools/build_dictionary.py` で `dictionary.sqlite` を形式6に再生成してください。
+詳細欄のJMdict英訳やKaikki補足欄の参照先をクリックすると、表示中のモードでリンク先の言語を指定して再検索できます。
 
 ## Windowsビルド・起動
 

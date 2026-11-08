@@ -1,6 +1,6 @@
 #include "DictionaryRepository.h"
 #include "MainWindow.h"
-#include <QPlainTextEdit>
+#include <QTextDocument>
 #include <QDir>
 #include "SearchHistory.h"
 #include <QApplication>
@@ -1311,7 +1311,7 @@ private slots:
         MainWindow window(folder + "dictionary.sqlite");
         auto *input = window.findChild<QLineEdit *>("searchInput");
         auto *heading = window.findChild<QLabel *>("resultHeading");
-        auto *panel = window.findChild<QPlainTextEdit *>("kaikkiSupplement");
+        auto *panel = window.findChild<QTextBrowser *>("kaikkiSupplement");
         QVERIFY(input && heading && panel);
         const auto searchFor = [&](const QString &word) {
             input->setText(word);
@@ -1330,6 +1330,14 @@ private slots:
         QCOMPARE(text.count("見て感動を与える様。"), 1);
         QVERIFY(!text.contains("[日本語] \n") && !text.endsWith("[日本語] "));
         QVERIFY(!heading->text().contains("WordNetには見出しがありません")); // WordNet has 美しい.
+        const auto reference = panel->document()->find("→ うつくしい");
+        const auto referenceUrl = QUrl(reference.charFormat().anchorHref());
+        QVERIFY(referenceUrl.isValid() && referenceUrl.path() == "/ja");
+        const auto savedHistory = settings.value("history/entries");
+        emit panel->anchorClicked(referenceUrl);
+        QCOMPARE(input->text(), QString("うつくしい"));
+        QCOMPARE(settings.value("history/entries"), savedHistory);
+        searchFor("美しい");
 
         // Selecting a candidate switches the panel to that word, without searching again
         // or touching history; a meaning heading goes back to the search word.
@@ -1460,10 +1468,10 @@ private slots:
         auto *plainInput = plain.findChild<QLineEdit *>("searchInput");
         plainInput->setText("美しい");
         QTest::keyClick(plainInput, Qt::Key_Return);
-        QVERIFY(plain.findChild<QPlainTextEdit *>("kaikkiSupplement")->isHidden());
+        QVERIFY(plain.findChild<QTextBrowser *>("kaikkiSupplement")->isHidden());
         auto *plainTree = plain.findChild<QTreeWidget *>("results");
         plainTree->setCurrentItem(plainTree->topLevelItem(0)->child(0)); // Selecting does not show it either.
-        QVERIFY(plain.findChild<QPlainTextEdit *>("kaikkiSupplement")->isHidden());
+        QVERIFY(plain.findChild<QTextBrowser *>("kaikkiSupplement")->isHidden());
         settings.setValue("history/entries", QStringList{});
     }
     void realKaikki() {
@@ -1484,7 +1492,7 @@ private slots:
 
         MainWindow window(folder + "dictionary.sqlite");
         auto *input = window.findChild<QLineEdit *>("searchInput");
-        auto *panel = window.findChild<QPlainTextEdit *>("kaikkiSupplement");
+        auto *panel = window.findChild<QTextBrowser *>("kaikkiSupplement");
         QVERIFY(input && panel);
         input->setText(QStringLiteral("はしる"));
         QTest::keyClick(input, Qt::Key_Return);
@@ -1602,7 +1610,7 @@ private slots:
         QCOMPARE(settings.value("history/entries").toStringList(), QStringList{"ja:AI"});
         QVERIFY(run(window, "run").contains("英和（JMdict逆引き）"));
         auto *tree = window.findChild<QTreeWidget *>("results");
-        auto *panel = window.findChild<QPlainTextEdit *>("kaikkiSupplement");
+        auto *panel = window.findChild<QTextBrowser *>("kaikkiSupplement");
         QVERIFY(panel->toPlainText().contains("run supplement"));
         tree->setCurrentItem(tree->topLevelItem(1)->child(0));
         QVERIFY(panel->toPlainText().contains("走るの補足"));
@@ -1629,6 +1637,15 @@ private slots:
         QTest::keyClick(tree, Qt::Key_Left, Qt::ControlModifier);
         QCOMPARE(settings.value("history/entries").toStringList(), (QStringList{"en:T-shirt", "ja:Tシャツ", "ja:AI"}));
         QCOMPARE(tree->currentItem(), candidate);
+        auto *browser = window.findChild<QTextBrowser *>("wordDetails");
+        const auto gloss = browser->document()->find("T-shirt");
+        const auto glossUrl = QUrl(gloss.charFormat().anchorHref());
+        QVERIFY(glossUrl.isValid() && glossUrl.path() == "/en");
+        const auto savedHistory = settings.value("history/entries");
+        emit browser->anchorClicked(glossUrl);
+        QCOMPARE(window.findChild<QLineEdit *>("searchInput")->text(), QString("T-shirt"));
+        QVERIFY(heading->text().contains("英和（JMdict逆引き）"));
+        QCOMPARE(settings.value("history/entries"), savedHistory);
         settings.remove("search/translationMode");
         settings.setValue("history/entries", QStringList{});
     }
