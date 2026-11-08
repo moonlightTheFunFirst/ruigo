@@ -14,6 +14,7 @@
 #include <QFileInfo>
 #include <QProcess>
 #include <QTimer>
+#include <QMenu>
 #include <QAction>
 #include <QDialogButtonBox>
 #include <QDialog>
@@ -466,6 +467,40 @@ private slots:
         history->setFocus();
         QTest::keyClick(history, Qt::Key_Right);
         QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(history));
+        input->setFocus();
+        input->setText("人工知能");
+        QTest::keyClick(input, Qt::Key_Return);
+        auto *group = tree->topLevelItem(0);
+        QVERIFY(group);
+        QCOMPARE(group->childCount(), 2);
+        QTimer::singleShot(0, [] {
+            auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            if (menu && !menu->actions().isEmpty()) {
+                menu->setActiveAction(menu->actions().first());
+                QTest::keyClick(menu, Qt::Key_Return);
+            }
+        });
+        emit tree->customContextMenuRequested(tree->visualItemRect(group).center());
+        QCOMPARE(QApplication::clipboard()->text(), QString("AI\nsolo"));
+
+        const auto savedHistory = settings.value("history/entries");
+        QTest::keyClick(input, Qt::Key_Left, Qt::AltModifier);
+        QCOMPARE(input->text(), QString("存在しない語"));
+        QTest::keyClick(input, Qt::Key_Right, Qt::AltModifier);
+        QCOMPARE(input->text(), QString("人工知能"));
+        QCOMPARE(settings.value("history/entries"), savedHistory);
+        auto *mode = window.findChild<QRadioButton *>("translationMode");
+        mode->setChecked(true);
+        QTest::keyClick(input, Qt::Key_Left, Qt::AltModifier);
+        QVERIFY(!mode->isChecked());
+        QTest::keyClick(input, Qt::Key_Right, Qt::AltModifier);
+        QVERIFY(mode->isChecked());
+        QTest::keyClick(input, Qt::Key_Left, Qt::AltModifier);
+        input->setText("beautiful");
+        QTest::keyClick(input, Qt::Key_Return);
+        QTest::keyClick(input, Qt::Key_Right, Qt::AltModifier);
+        QCOMPARE(input->text(), QString("beautiful"));
+        QVERIFY(!mode->isChecked());
         window.close();
         settings.setValue("history/entries", QStringList{});
     }

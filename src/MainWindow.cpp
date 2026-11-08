@@ -35,6 +35,7 @@
 #include <QMenu>
 #include <QScreen>
 #include <QSignalBlocker>
+#include <QScopedValueRollback>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTreeWidget>
@@ -143,15 +144,15 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     input_->setClearButtonEnabled(true);
     leftLayout->addWidget(input_);
     auto *modes = new QHBoxLayout;
-    auto *synonymMode = new QRadioButton(QStringLiteral("類語"));
+    synonymMode_ = new QRadioButton(QStringLiteral("類語"));
     translationMode_ = new QRadioButton(QStringLiteral("翻訳"));
     translationMode_->setObjectName("translationMode");
-    modes->addWidget(synonymMode);
+    modes->addWidget(synonymMode_);
     modes->addWidget(translationMode_);
     modes->addStretch();
     leftLayout->addLayout(modes);
     if (settings_.value("search/translationMode", false).toBool()) translationMode_->setChecked(true);
-    else synonymMode->setChecked(true);
+    else synonymMode_->setChecked(true);
     leftLayout->addWidget(new QLabel(QStringLiteral("入力履歴")));
     historyList_ = new QListWidget;
     historyList_->setObjectName("historyList");
@@ -331,9 +332,16 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     setCentralWidget(splitter_);
     splitter_->setSizes({300, 700});
     connect(input_, &QLineEdit::returnPressed, this, [this] { search(input_->text(), {}, true); });
+    for (const int offset : {-1, 1}) {
+        auto *action = new QAction(this);
+        action->setShortcut(QKeySequence(Qt::ALT | (offset < 0 ? Qt::Key_Left : Qt::Key_Right)));
+        addAction(action);
+        connect(action, &QAction::triggered, this, [this, offset] { navigateSearch(offset); });
+    }
     connect(translationMode_, &QRadioButton::toggled, this, [this](bool enabled) {
         settings_.setValue("search/translationMode", enabled);
         showRelatedCheck_->setVisible(!enabled);
+        if (restoringSearch_) return;
         if (!input_->text().trimmed().isEmpty()) {
             const auto requested = input_->text().trimmed() == lastWord_ ? language_ : QString{};
             search(input_->text(), requested);
@@ -365,13 +373,28 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     connect(results_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *item) { copyWord(item); });
     connect(results_, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &point) {
         auto *item = results_->itemAt(point);
-        if (!item || !item->parent()) return;
-        const auto word = item->data(0, Qt::UserRole).toString();
+        if (!item) return;
         QMenu menu;
+        const auto position = results_->viewport()->mapToGlobal(point);
+        if (!item->parent()) {
+            QStringList words;
+            for (int row = 0; row < item->childCount(); ++row) {
+                const auto *child = item->child(row);
+                if (!child->isHidden()) words.append(child->data(0, Qt::UserRole).toString());
+            }
+            if (words.isEmpty()) return;
+            auto *copyGroup = menu.addAction(QStringLiteral("グループの候補をまとめてコピー"));
+            if (menu.exec(position) == copyGroup) {
+                QApplication::clipboard()->setText(words.join('\n'));
+                statusBar()->showMessage(QStringLiteral("候補を%1件コピーしました").arg(words.size()), 2500);
+            }
+            return;
+        }
+        const auto word = item->data(0, Qt::UserRole).toString();
         auto *copy = menu.addAction(QStringLiteral("コピー"));
         copy->setShortcut(QKeySequence::Copy); // Shown as a hint; the tree's own action handles the key.
         auto *find = menu.addAction(QStringLiteral("この単語で検索"));
-        auto *selected = menu.exec(results_->viewport()->mapToGlobal(point));
+        auto *selected = menu.exec(position);
         if (selected == copy) copyWord(item);
         else if (selected == find) search(word, translationMode_->isChecked()
             ? (language_ == "ja" ? QStringLiteral("en") : QStringLiteral("ja")) : language_);
@@ -579,6 +602,31 @@ void MainWindow::search(const QString &input, const QString &requestedLanguage, 
         showResult();
     }
     if (fromHistory) showHistoryDetails(word, language_, translating ? &translations : nullptr);
+    if (restoringSearch_) return;
+    const SearchLocation location{word, language_, originalInput, entries, translating, fromHistory};
+    if (searchLocation_ >= 0) {
+        auto &current = searchLocations_[searchLocation_];
+        if (current.word == location.word && current.language == location.language &&
+            current.originalInput == location.originalInput && current.entries == location.entries &&
+            current.translation == location.translation) {
+            current.fromHistory = fromHistory;
+            return;
+        }
+    }
+    searchLocations_.resize(searchLocation_ + 1);
+    searchLocations_.append(location);
+    if (searchLocations_.size() > 100) searchLocations_.removeFirst();
+    searchLocation_ = searchLocations_.size() - 1;
+}
+
+void MainWindow::navigateSearch(int offset) {
+    const auto target = searchLocation_ + offset;
+    if (target < 0 || target >= searchLocations_.size()) return;
+    searchLocation_ = target;
+    const auto &location = searchLocations_.at(target);
+    QScopedValueRollback<bool> restoring(restoringSearch_, true);
+    (location.translation ? translationMode_ : synonymMode_)->setChecked(true);
+    search(location.word, location.language, false, location.entries, location.originalInput, location.fromHistory);
 }
 
 void MainWindow::showHistoryDetails(const QString &word, const QString &language,

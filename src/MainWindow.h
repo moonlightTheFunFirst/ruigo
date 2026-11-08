@@ -46,6 +46,16 @@ private:
     void applyDisplaySettings();
     QFont displayFont() const;
     void copyWord(QTreeWidgetItem *item);
+    void navigateSearch(int offset);
+    struct SearchLocation {
+        QString word, language, originalInput;
+        QVector<qint64> entries;
+        bool translation;
+        bool fromHistory;
+    };
+    QVector<SearchLocation> searchLocations_;
+    int searchLocation_ = -1;
+    bool restoringSearch_ = false;
     QSettings settings_;
     SearchHistory history_{settings_};
     DictionaryRepository repository_;
@@ -67,6 +77,7 @@ private:
     QPushButton *alternativeButton_;
     QPushButton *formOfButton_;
     QCheckBox *showRelatedCheck_;
+    QRadioButton *synonymMode_;
     QRadioButton *translationMode_;
     QLineEdit *input_;
     QListWidget *historyList_;
