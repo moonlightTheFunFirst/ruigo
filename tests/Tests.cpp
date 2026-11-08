@@ -589,6 +589,137 @@ private slots:
         window.close();
         settings.setValue("history/entries", QStringList{});
     }
+    void detailsFollowTheSelection() {
+        QSettings settings;
+        settings.setValue("history/entries", QStringList{});
+        settings.setValue("pinned/entries", QStringList{"ja:綺麗", "ja:美しい"});
+        settings.remove("search/translationMode");
+        {
+            // A broken WordNet DB is reported even when starting in translation mode.
+            settings.setValue("search/translationMode", true);
+            MainWindow missing(temporary_.filePath("missing.sqlite"));
+            auto *startupHeading = missing.findChild<QLabel *>("resultHeading");
+            QVERIFY(!startupHeading->isHidden());
+            QVERIFY(startupHeading->text().contains("見つかりません"));
+            settings.remove("search/translationMode");
+        }
+        MainWindow window(fixture_);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        window.activateWindow();
+        if (QGuiApplication::platformName() != "offscreen") QVERIFY(QTest::qWaitForWindowActive(&window));
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *tree = window.findChild<QTreeWidget *>("results");
+        auto *history = window.findChild<QListWidget *>("historyList");
+        auto *pins = window.findChild<QListWidget *>("pinnedList");
+        auto *details = window.findChild<QTextBrowser *>("wordDetails");
+        const auto searchFor = [&](const QString &word) {
+            input->setFocus();
+            input->setText(word);
+            QTest::keyClick(input, Qt::Key_Return);
+        };
+        // Coming back to the same candidate restores its details, not only via the Right key.
+        searchFor("美しい");
+        auto *candidate = tree->topLevelItem(0)->child(0);
+        tree->setFocus();
+        tree->setCurrentItem(candidate);
+        const auto candidateDetails = details->toPlainText();
+        QVERIFY(candidateDetails.contains("現在の意味"));
+        QTest::keyClick(tree, Qt::Key_Left);
+        QVERIFY(details->toPlainText() != candidateDetails);
+        tree->setFocus();
+        QTRY_COMPARE(details->toPlainText(), candidateDetails);
+        // A right press only opens the menu: no row change and no new search.
+        searchFor("綺麗");
+        const auto rightClick = [](QListWidget *list, int row) {
+            QTest::mouseClick(list->viewport(), Qt::RightButton, Qt::NoModifier,
+                              list->visualItemRect(list->item(row)).center());
+        };
+        searchFor("美しい");
+        rightClick(pins, 0);
+        QCOMPARE(input->text(), QString("美しい"));
+        QVERIFY(pins->selectedItems().isEmpty());
+        // The press is swallowed, but the window-level right click still opens the menu.
+        bool menuSeen = false;
+        const auto openAndCloseMenu = [&](QListWidget *list, int row) {
+            menuSeen = false;
+            QTimer::singleShot(100, &window, [&menuSeen] {
+                if (auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
+                    menuSeen = true;
+                    menu->close();
+                }
+            });
+            QTest::mouseClick(window.windowHandle(), Qt::RightButton, Qt::NoModifier,
+                              list->viewport()->mapTo(&window, list->visualItemRect(list->item(row)).center()));
+        };
+        openAndCloseMenu(pins, 0);
+        QVERIFY(menuSeen);
+        QCOMPARE(pins->count(), 2);
+        QCOMPARE(input->text(), QString("美しい"));
+        const auto previousDetails = details->toPlainText();
+        openAndCloseMenu(history, 0); // 綺麗, while 美しい is the current row.
+        QVERIFY(menuSeen);
+        QCOMPARE(input->text(), QString("美しい"));
+        QCOMPARE(history->currentRow(), 1);
+        QCOMPARE(history->selectedItems(), QList<QListWidgetItem *>{history->item(1)});
+        QCOMPARE(details->toPlainText(), previousDetails);
+        // Same-spelling entries with different readings show each reading with its meaning.
+        history->setCurrentRow(0);
+        const auto homographs = details->toPlainText();
+        QVERIFY2(homographs.contains("（読み：きれい）"), qPrintable(homographs));
+        QVERIFY(homographs.contains("（読み：べつよみ）"));
+        QVERIFY(!homographs.contains("読み：きれい／べつよみ"));
+        // Without one settled headword the details do not claim that no meaning exists.
+        searchFor("きかい");
+        searchFor("美しい");
+        history->setCurrentRow(0);
+        QCOMPARE(input->text(), QString("きかい"));
+        QVERIFY(details->toPlainText().contains("一覧から見出しを選ぶ"));
+        QVERIFY(!details->toPlainText().contains("収録されている意味"));
+        searchFor("存在しない語");
+        searchFor("美しい");
+        history->setCurrentRow(0);
+        QCOMPARE(input->text(), QString("存在しない語"));
+        QVERIFY(details->toPlainText().contains("見出しがありません"));
+        // A row made current only by focus is not "selected": Delete and F2 leave it alone,
+        // and Down searches the first row instead of skipping it.
+        const auto makeFocusOnlyCurrent = [](QListWidget *list) {
+            const QSignalBlocker blocker(list);
+            list->setCurrentRow(0, QItemSelectionModel::NoUpdate);
+            list->clearSelection();
+            list->setFocus();
+        };
+        const auto historyCount = history->count();
+        makeFocusOnlyCurrent(history);
+        QTest::keyClick(history, Qt::Key_Delete);
+        QCOMPARE(history->count(), historyCount);
+        QTest::keyClick(history, Qt::Key_F2);
+        QVERIFY(!history->findChild<QLineEdit *>("historyEditor"));
+        makeFocusOnlyCurrent(pins);
+        QTest::keyClick(pins, Qt::Key_Down);
+        QCOMPARE(pins->currentRow(), 0);
+        QCOMPARE(pins->selectedItems().size(), 1);
+        QCOMPARE(input->text(), pins->item(0)->data(Qt::UserRole + 1).toString());
+        // Switching modes keeps a headword chosen from "saw" limited to the verb "see".
+        searchFor("saw");
+        window.findChild<QPushButton *>("formOfButton")->click();
+        QCOMPARE(input->text(), QString("see"));
+        const auto groups = [tree] {
+            QStringList titles;
+            for (int i = 0; i < tree->topLevelItemCount(); ++i) titles.append(tree->topLevelItem(i)->text(0));
+            return titles;
+        };
+        const auto verbOnly = groups();
+        auto *mode = window.findChild<QRadioButton *>("translationMode");
+        mode->setChecked(true);
+        for (auto *button : window.findChildren<QRadioButton *>())
+            if (button != mode) button->setChecked(true);
+        QCOMPARE(groups(), verbOnly);
+        window.close();
+        settings.remove("search/translationMode");
+        settings.setValue("history/entries", QStringList{});
+        settings.setValue("pinned/entries", QStringList{});
+    }
     void spellingAliases() {
         DictionaryRepository repository;
         QVERIFY(repository.open(fixture_));
@@ -1597,17 +1728,18 @@ private slots:
                 QVERIFY(run(old, "run").contains("再生成"));
             }
             const QStringList sql = {
-                "PRAGMA user_version=3",
+                "PRAGMA user_version=4",
                 "CREATE TABLE senses(id INTEGER PRIMARY KEY,entry INTEGER,position INTEGER,pos TEXT)",
                 "CREATE TABLE sense_examples(sense INTEGER,position INTEGER,japanese TEXT,english TEXT,source TEXT)",
                 "INSERT INTO sense_examples VALUES (1,0,'公園で走った。','I ran in the park.','https://tatoeba.org/sentences/show/1')",
                 "CREATE TABLE forms(sense INTEGER,word TEXT,reading TEXT)",
                 "CREATE TABLE glosses(sense INTEGER,position INTEGER,text TEXT,exact TEXT,folded TEXT,bare_verb TEXT)",
-                "INSERT INTO senses VALUES (1,1,1,'verb'),(2,2,1,'noun'),(3,3,1,'noun'),(4,4,1,'noun'),(5,5,1,'noun')",
+                "INSERT INTO senses VALUES (1,1,1,'verb'),(2,2,1,'noun'),(3,3,1,'noun'),(4,4,1,'noun'),(5,5,1,'noun'),(6,6,1,'expressions (phrases, clauses, etc.)')",
                 "INSERT INTO forms VALUES (1,'走る','はしる'),(2,'連続','れんぞく'),"
-                "(3,'Ｔシャツ','ティーシャツ'),(3,'ティーシャツ','ティーシャツ'),(4,'ＣＤ','シーディー'),(5,'ＡＩ','エーアイ')",
+                "(3,'Ｔシャツ','ティーシャツ'),(3,'ティーシャツ','ティーシャツ'),(4,'ＣＤ','シーディー'),(5,'ＡＩ','エーアイ'),(6,'今まで','いままで')",
                 "INSERT INTO glosses VALUES (1,0,'to run','to run','to run','run'),(2,0,'run','run','run',NULL),"
-                "(3,0,'T-shirt','T-shirt','t-shirt',NULL),(4,0,'CD','CD','cd',NULL),(5,0,'AI','AI','ai',NULL)"
+                "(3,0,'T-shirt','T-shirt','t-shirt',NULL),(4,0,'CD','CD','cd',NULL),(5,0,'AI','AI','ai',NULL),"
+                "(6,0,'to date','to date','to date',NULL)"
             };
             QSqlQuery query(db);
             for (const auto &statement : sql) QVERIFY2(query.exec(statement), qPrintable(query.lastError().text()));
@@ -1623,8 +1755,9 @@ private slots:
                 "CREATE TABLE senses(id INTEGER PRIMARY KEY,entry_id INTEGER,source_position INTEGER,glosses_json TEXT,gloss_language TEXT)",
                 "CREATE TABLE relations(id INTEGER PRIMARY KEY,entry_id INTEGER,sense_id INTEGER,kind TEXT,target_word TEXT,target_language TEXT)",
                 "CREATE TABLE spelling_references(sense_id INTEGER,target_entry_id INTEGER)",
-                "INSERT INTO entries VALUES (1,'run','en','verb'),(2,'走る','ja','verb')",
-                R"(INSERT INTO senses VALUES (1,1,1,'["run supplement"]','en'),(2,2,1,'["走るの補足"]','ja'))"
+                "INSERT INTO entries VALUES (1,'run','en','verb'),(2,'走る','ja','verb'),(3,'date','en','noun')",
+                R"(INSERT INTO senses VALUES (1,1,1,'["run supplement"]','en'),(2,2,1,'["走るの補足"]','ja'),)"
+                R"((3,3,1,'["date supplement"]','en'))"
             };
             QSqlQuery query(db);
             for (const auto &statement : sql) QVERIFY2(query.exec(statement), qPrintable(query.lastError().text()));
@@ -1644,6 +1777,39 @@ private slots:
         QCOMPARE(both.senses.at(0).words.first(), QString("連続"));
         QCOMPARE(both.senses.at(1).words.first(), QString("走る"));
 
+        {
+            MainWindow translated(path);
+            enable(translated);
+            // A percent sign in the word does not disturb the heading.
+            const auto percent = run(translated, "50%1");
+            QVERIFY2(percent.contains("「50%1」") && percent.contains("0語義"), qPrintable(percent));
+            // Kaikki is looked up with the search word only, not every spelling of the matches.
+            auto *translatedPanel = translated.findChild<QTextBrowser *>("kaikkiSupplement");
+            run(translated, "はしる");
+            QVERIFY(translatedPanel->isHidden());
+            // "to date" is not a verb, so it does not show the Kaikki entry for "date".
+            run(translated, "今まで");
+            auto *phraseTree = translated.findChild<QTreeWidget *>("results");
+            phraseTree->setCurrentItem(phraseTree->topLevelItem(0)->child(0));
+            QVERIFY(!translatedPanel->toPlainText().contains("date supplement"));
+            run(translated, "to date");
+            QVERIFY(translatedPanel->isHidden());
+            // A verb gloss finds the Kaikki headword without "to".
+            run(translated, "走る");
+            auto *translatedTree = translated.findChild<QTreeWidget *>("results");
+            auto *gloss = translatedTree->topLevelItem(0)->child(0);
+            QCOMPARE(gloss->text(0), QString("to run"));
+            translatedTree->setCurrentItem(gloss);
+            QVERIFY(translatedPanel->toPlainText().contains("run supplement"));
+            auto *browser = translated.findChild<QTextBrowser *>("wordDetails");
+            const auto link = QUrl(browser->document()->find("to run").charFormat().anchorHref());
+            QVERIFY(link.isValid() && link.path() == "/en");
+            emit browser->anchorClicked(link);
+            QCOMPARE(translated.findChild<QLineEdit *>("searchInput")->text(), QString("to run"));
+            QVERIFY(translated.findChild<QLabel *>("resultHeading")->text().contains("英和（JMdict逆引き）"));
+            QVERIFY(!translatedPanel->isHidden());
+            QVERIFY(translatedPanel->toPlainText().contains("run supplement"));
+        }
         settings.remove("search/translationMode");
         settings.setValue("history/entries", QStringList{"ja:AI"});
         MainWindow window(path);

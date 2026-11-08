@@ -58,6 +58,7 @@ private:
     QVector<SearchLocation> searchLocations_;
     int searchLocation_ = -1;
     bool restoringSearch_ = false;
+    bool historyDetailsShown_ = false; // The details pane shows a history entry, not the current candidate.
     QSettings settings_;
     SearchHistory history_{settings_};
     SearchHistory pinned_{settings_, SearchHistory::List::Pinned};
@@ -73,7 +74,7 @@ private:
     QTextBrowser *kaikkiPanel_;
     QTextBrowser *detailsPanel_;  // Reading and meanings of the selected candidate.
     QSplitter *resultSplitter_;   // Results above, the bottom row below.
-    QSplitter *bottomSplitter_;   // Kaikki panel on the left, details on the right.
+    QSplitter *bottomSplitter_;   // Details on the left, Kaikki panel on the right.
     int bottomHeight_ = 180;      // Bottom row height chosen by the user (window/kaikkiPanelHeight).
     int detailsWidth_ = 360;      // Details width chosen by the user (window/detailsPanelWidth).
     bool bottomSized_ = false;    // The saved height is applied once the window is laid out.

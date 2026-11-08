@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import gzip
 import hashlib
 from pathlib import Path
+import re
 import sqlite3
 import tempfile
 import time
@@ -12,7 +13,13 @@ import unicodedata
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = 3
+VERSION = 4
+
+
+def bare_verb(folded, pos):
+    # "to date" is an adverbial phrase, not the verb "date": only verb senses qualify.
+    # The word boundary keeps "adverb" from counting as a verb.
+    return folded[3:] if folded.startswith("to ") and re.search(r"\bverb\b", pos, re.IGNORECASE) else None
 
 
 def replace_with_retry(source, target):
@@ -144,8 +151,8 @@ def insert_entry(db, entry):
         for i, gloss in enumerate(glosses):
             exact = unicodedata.normalize("NFC", gloss)
             folded = exact.lower()
-            bare_verb = folded[3:] if folded.startswith("to ") else None
-            db.execute("INSERT INTO glosses VALUES (?,?,?,?,?,?)", (sid, i, gloss, exact, folded, bare_verb))
+            db.execute("INSERT INTO glosses VALUES (?,?,?,?,?,?)",
+                       (sid, i, gloss, exact, folded, bare_verb(folded, " / ".join(pos))))
 
 
 if __name__ == "__main__":

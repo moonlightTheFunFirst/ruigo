@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include <QApplication>
 #include <QRadioButton>
+#include <QMouseEvent>
 #include <QHBoxLayout>
 #include <QAccessible>
 #include <QAction>
@@ -215,15 +216,23 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         [this, editAction, deleteAction](const QPoint &point) {
             auto *item = historyList_->itemAt(point);
             if (!item) return;
-            QSignalBlocker blocker(historyList_);
-            historyList_->setCurrentItem(item);
             QMenu menu;
-            menu.addAction(editAction);
-            menu.addAction(deleteAction);
+            auto *edit = menu.addAction(editAction->text());
+            auto *remove = menu.addAction(deleteAction->text());
+            // Shown as hints; the list's own actions handle the keys.
+            edit->setShortcut(editAction->shortcut());
+            remove->setShortcut(deleteAction->shortcut());
             const auto word = item->data(Qt::UserRole + 1).toString();
             const auto language = item->data(Qt::UserRole).toString();
             auto *pin = menu.addAction(QStringLiteral("ピン留めに追加"));
-            if (menu.exec(historyList_->viewport()->mapToGlobal(point)) == pin) pinWord(word, language);
+            const auto *selected = menu.exec(historyList_->viewport()->mapToGlobal(point));
+            if (selected == pin) {
+                pinWord(word, language);
+            } else if (selected == edit || selected == remove) {
+                const QSignalBlocker blocker(historyList_);
+                historyList_->setCurrentItem(item);
+                (selected == edit ? editAction : deleteAction)->trigger();
+            }
         });
     leftLayout->addWidget(historyList_, 2);
     leftLayout->addWidget(new QLabel(QStringLiteral("ピン留め")));
@@ -315,6 +324,10 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     results_->installEventFilter(this); // Enter copies, Up from the first word returns to the search box.
     input_->installEventFilter(this);   // Down moves to the first candidate.
     historyList_->installEventFilter(this);     // Right moves to the candidates.
+    // A right press must only open the menu, not make the row current and search it.
+    historyList_->viewport()->installEventFilter(this);
+    pinnedList_->viewport()->installEventFilter(this);
+    pinnedList_->installEventFilter(this); // Focus must not search the first row.
     spellingChoices_->installEventFilter(this); // Left returns to the history.
     auto *copyAction = new QAction(QStringLiteral("コピー"), results_);
     copyAction->setShortcut(QKeySequence::Copy);
@@ -417,9 +430,15 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         settings_.setValue("search/translationMode", enabled);
         showRelatedCheck_->setVisible(!enabled);
         if (restoringSearch_) return;
-        if (!input_->text().trimmed().isEmpty()) {
-            const auto requested = input_->text().trimmed() == lastWord_ ? language_ : QString{};
-            search(input_->text(), requested);
+        const auto typed = input_->text().trimmed();
+        if (!typed.isEmpty()) {
+            // Re-run the same search in the other mode, keeping a headword chosen from a list.
+            const bool same = typed == lastWord_;
+            SearchLocation previous{};
+            if (same && searchLocation_ >= 0 && searchLocations_.at(searchLocation_).word == typed)
+                previous = searchLocations_.at(searchLocation_);
+            search(typed, same ? language_ : QString{}, false, previous.entries, previous.originalInput,
+                   previous.fromHistory);
         }
         else {
             heading_->hide();
@@ -497,7 +516,6 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     const auto warning = kaikki_.open(QFileInfo(dictionaryPath).dir().filePath("kaikki.sqlite"));
     jmdict_.open(QFileInfo(dictionaryPath).dir().filePath("jmdict.sqlite"));
     showRelatedCheck_->setVisible(!translationMode_->isChecked());
-    if (translationMode_->isChecked()) heading_->hide();
     if (!warning.isEmpty()) statusBar()->showMessage(warning, 15000);
     applyDisplaySettings();
     showDetailsFor(nullptr);
@@ -645,12 +663,12 @@ void MainWindow::pinWord(const QString &word, const QString &language) {
 
 void MainWindow::editHistory() {
     auto *item = historyList_->currentItem();
-    if (!item) return;
+    if (!item || !item->isSelected()) return; // A row made current only by focus is not chosen.
     historyList_->editItem(item);
 }
 void MainWindow::deleteHistory() {
     auto *item = historyList_->currentItem();
-    if (!item) return;
+    if (!item || !item->isSelected()) return; // A row made current only by focus is not chosen.
     history_.remove(item->data(Qt::UserRole + 1).toString(), item->data(Qt::UserRole).toString());
     QSignalBlocker blocker(historyList_);
     const auto row = historyList_->row(item);
@@ -731,6 +749,7 @@ void MainWindow::navigateSearch(int offset) {
 
 void MainWindow::showHistoryDetails(const QString &word, const QString &language,
                                     const TranslationResult *translations) {
+    historyDetailsShown_ = true;
     if (translationMode_->isChecked()) {
         const auto result = translations ? *translations : jmdict_.search(word, language);
         QStringList sections{escapedLines(word)};
@@ -745,7 +764,15 @@ void MainWindow::showHistoryDetails(const QString &word, const QString &language
         return;
     }
     const bool sameSearch = word == lastWord_ && language == language_;
-    const auto words = sameSearch && !lastResult_.matchedWords.isEmpty() ? lastResult_.matchedWords : QStringList{word};
+    const auto result = sameSearch ? lastResult_ : repository_.search(word, language);
+    if (!result.error.isEmpty() || !result.spellings.isEmpty() || !result.found) {
+        // No single headword is settled, so there is nothing to look up details for.
+        detailsPanel_->setPlainText(!result.error.isEmpty() ? result.error
+            : !result.spellings.isEmpty() ? QStringLiteral("一覧から見出しを選ぶと、読みと意味を表示します。")
+                                          : QStringLiteral("WordNetに見出しがありません。"));
+        return;
+    }
+    const auto words = result.matchedWords.isEmpty() ? QStringList{word} : result.matchedWords;
     QStringList sections;
     for (const auto &headword : words) sections.append(wordDetailsHtml(headword, language));
     detailsPanel_->setHtml(sections.join(QStringLiteral("<hr>")));
@@ -769,8 +796,11 @@ void MainWindow::showTranslation(const QString &word, const TranslationResult &r
     spellingChoices_->hide();
     spellingChoices_->clear();
     QStringList lookupWords{word};
-    if (language_ == "ja") {
-        for (const auto &sense : result.senses) lookupWords.append(sense.words);
+    for (const auto &sense : result.senses) {
+        for (const auto &gloss : sense.glosses) {
+            const auto headword = JmdictRepository::bareVerb(gloss, sense.pos);
+            if (!headword.isEmpty() && gloss.compare(word, Qt::CaseInsensitive) == 0) lookupWords.append(headword);
+        }
     }
     lookupWords.removeDuplicates();
     searchKaikki_ = kaikkiHtml(lookupWords, language_);
@@ -784,8 +814,8 @@ void MainWindow::showTranslation(const QString &word, const TranslationResult &r
     }
     const bool japanese = language_ == "ja";
     heading_->setText(QStringLiteral("「%1」 %2 · %3語義").arg(word,
-        japanese ? QStringLiteral("和英（JMdict）") : QStringLiteral("英和（JMdict逆引き）"))
-        .arg(result.senses.size()));
+        japanese ? QStringLiteral("和英（JMdict）") : QStringLiteral("英和（JMdict逆引き）"),
+        QString::number(result.senses.size())));
     if (result.senses.isEmpty()) {
         heading_->setText(heading_->text() + QStringLiteral("\n訳が見つかりませんでした。"));
         return;
@@ -803,6 +833,7 @@ void MainWindow::showTranslation(const QString &word, const TranslationResult &r
             item->setData(0, Qt::UserRole, candidate);
             item->setData(0, Qt::UserRole + 3, japanese ? QStringLiteral("en") : QStringLiteral("ja"));
             item->setData(0, Qt::UserRole + 4, sense.id);
+            if (japanese) item->setData(0, Qt::UserRole + 5, JmdictRepository::bareVerb(candidate, sense.pos));
             item->setData(0, Qt::UserRole + 2, translationDetailsHtml(
                 japanese ? words : candidate,
                 japanese ? readings : sense.readingsByWord.value(candidate).join(QStringLiteral("／")),
@@ -830,7 +861,10 @@ void MainWindow::showKaikkiFor(QTreeWidgetItem *item) {
         if (item && item->parent()) {
             const auto word = item->data(0, Qt::UserRole).toString();
             const auto candidateLanguage = item->data(0, Qt::UserRole + 3).toString();
-            const auto body = kaikkiHtml({word}, candidateLanguage.isEmpty() ? language_ : candidateLanguage);
+            QStringList words{word};
+            const auto headword = item->data(0, Qt::UserRole + 5).toString(); // "to run" is listed under "run".
+            if (!headword.isEmpty()) words.append(headword);
+            const auto body = kaikkiHtml(words, candidateLanguage.isEmpty() ? language_ : candidateLanguage);
             text = QStringLiteral("Wiktionary / Kaikki<br><br>") + (body.isEmpty()
                        ? QStringLiteral("「%1」の項目はありません。").arg(escapedLines(word)) : body);
         } else if (!searchKaikki_.isEmpty()) {
@@ -855,6 +889,7 @@ void MainWindow::applyBottomSizes() {
     resultSplitter_->setSizes({qMax(total - bottomHeight_, results_->minimumHeight()), bottomHeight_});
 }
 void MainWindow::showDetailsFor(QTreeWidgetItem *item) {
+    historyDetailsShown_ = false;
     if (translationMode_->isChecked()) {
         detailsPanel_->setHtml(item && item->parent()
             ? item->data(0, Qt::UserRole + 2).toString() +
@@ -890,10 +925,19 @@ QString MainWindow::wordDetailsHtml(const QString &word, const QString &language
     const auto examples = [&](const QString &text) {
         return text.isEmpty() ? QString{} : QStringLiteral("<br><b>用例・例文</b><br>") + escape(text);
     };
+    const auto readingText = [&](const QStringList &readings) {
+        return readings.isEmpty() ? QStringLiteral("未収録") : escape(readings.join(QStringLiteral("／")));
+    };
+    // Without a current meaning every entry of this spelling is listed; when their readings
+    // differ, each meaning shows its own instead of one merged line.
+    bool readingsPerMeaning = false;
+    if (synset.isEmpty() && details.showReadings) {
+        for (const auto &meaning : details.otherMeanings)
+            readingsPerMeaning |= meaning.readings != details.otherMeanings.first().readings;
+    }
     QString html = QStringLiteral("<b>%1</b>").arg(escape(word));
-    if (details.showReadings)
-        html += QStringLiteral("<br>読み：%1").arg(details.readings.isEmpty()
-            ? QStringLiteral("未収録") : escape(details.readings.join(QStringLiteral("／"))));
+    if (details.showReadings && !readingsPerMeaning)
+        html += QStringLiteral("<br>読み：%1").arg(readingText(details.readings));
     if (!synset.isEmpty()) {
         html += QStringLiteral("<p><b>現在の意味</b><br>%1</p><p><b>ほかに収録されている意味</b><br>")
             .arg(definition(currentDefinition) + examples(details.currentExamples));
@@ -902,8 +946,9 @@ QString MainWindow::wordDetailsHtml(const QString &word, const QString &language
     }
     QStringList others;
     for (const auto &meaning : details.otherMeanings)
-        others.append(QStringLiteral("%1. %2").arg(others.size() + 1)
-            .arg(definition(meaning.definition) + examples(meaning.examples)));
+        others.append(QStringLiteral("%1. ").arg(others.size() + 1)
+            + (readingsPerMeaning ? QStringLiteral("（読み：%1）").arg(readingText(meaning.readings)) : QString{})
+            + definition(meaning.definition) + examples(meaning.examples));
     html += others.isEmpty() ? QStringLiteral("なし") : others.join(QStringLiteral("<br><br>"));
     return html + QStringLiteral("</p>");
 }
@@ -1023,8 +1068,8 @@ void MainWindow::showResult() {
     if (!result.matchedWords.isEmpty())
         target += QStringLiteral("（%1%2）").arg(quoted(result.matchedWords), relation(result.matchKind));
     QString heading = QStringLiteral("%1で検索 — %2の類語候補：%3件（%4意味）")
-        .arg(DictionaryRepository::languageName(language_), target)
-        .arg(result.candidateCount()).arg(result.groups.size());
+        .arg(DictionaryRepository::languageName(language_), target,
+             QString::number(result.candidateCount()), QString::number(result.groups.size()));
     if (showRelated)
         heading += QStringLiteral("、関連語：%1件").arg(result.relatedCount());
     else if (relatedHidden)
@@ -1032,7 +1077,7 @@ void MainWindow::showResult() {
     heading_->setText(heading);
     if (!result.spellings.isEmpty()) {
         if (result.choiceKind == "reading")
-            heading_->setText(QStringLiteral("「%1」と読む見出しが%2語あります。選んでください。").arg(word).arg(result.spellings.size()));
+            heading_->setText(QStringLiteral("「%1」と読む見出しが%2語あります。選んでください。").arg(word, QString::number(result.spellings.size())));
         else if (result.choiceKind == "inflection")
             heading_->setText(QStringLiteral("「%1」は%2の活用形です。選んでください。").arg(word, quoted(result.spellings)));
         else
@@ -1104,13 +1149,22 @@ bool MainWindow::eventFilter(QObject *object, QEvent *event) {
             }
             return false;
         }
+        // A row made current only by focus was never chosen, so Down starts from the first row.
+        if ((object == historyList_ || object == pinnedList_) && plain && key->key() == Qt::Key_Down) {
+            auto *list = static_cast<QListWidget *>(object);
+            if (list->currentItem() && !list->currentItem()->isSelected()) {
+                const QSignalBlocker blocker(list);
+                list->setCurrentRow(-1);
+            }
+            return QMainWindow::eventFilter(object, event);
+        }
         // Right in the history moves to the candidates (keeping a selected candidate, else the
         // first one; a headword choice list when there are no candidates). Nothing is searched.
         if (object == historyList_ && plain && key->key() == Qt::Key_Right) {
             auto *current = results_->currentItem();
             if (current && current->parent()) {
                 results_->setFocus(Qt::TabFocusReason);
-                showDetailsFor(current);
+                if (historyDetailsShown_) showDetailsFor(current);
                 return true;
             }
             for (int i = 0; i < results_->topLevelItemCount(); ++i) {
@@ -1155,6 +1209,27 @@ bool MainWindow::eventFilter(QObject *object, QEvent *event) {
             }
         }
         return QMainWindow::eventFilter(object, event);
+    }
+    if (event->type() == QEvent::MouseButtonPress &&
+        (object == historyList_->viewport() || object == pinnedList_->viewport()) &&
+        static_cast<QMouseEvent *>(event)->button() == Qt::RightButton)
+        return true;
+    // On focus, Qt makes the first row of a list without a current row current, which would
+    // search it (e.g. after a context menu closes). Set it silently first.
+    if (event->type() == QEvent::FocusIn && (object == historyList_ || object == pinnedList_)) {
+        auto *list = static_cast<QListWidget *>(object);
+        if (!list->currentItem()) {
+            const QSignalBlocker blocker(list);
+            list->setCurrentRow(0, QItemSelectionModel::NoUpdate);
+        }
+    }
+    // Returning to the results by mouse or Tab brings back the candidate's details.
+    // Deferred: a click delivers focus first, and the clicked row may become current right after.
+    if (object == results_ && event->type() == QEvent::FocusIn && historyDetailsShown_) {
+        QTimer::singleShot(0, this, [this] {
+            if (historyDetailsShown_ && results_->hasFocus() && results_->currentItem())
+                showDetailsFor(results_->currentItem());
+        });
     }
     // The saved bottom-row height needs the real splitter height, known after the first layout.
     if (object == resultSplitter_ && event->type() == QEvent::Resize && !bottomSized_

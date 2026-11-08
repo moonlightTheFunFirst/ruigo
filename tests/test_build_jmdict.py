@@ -18,6 +18,7 @@ XML = """<JMdict><entry><ent_seq>1</ent_seq>
 <ex_sent xml:lang="eng">Example.</ex_sent></example></sense>
 <sense><stagr>うら</stagr><gloss>back</gloss></sense>
 <sense><stagr>かな</stagr><gloss>kana</gloss></sense>
+<sense><pos>adverb (fukushi)</pos><stagr>うら</stagr><gloss>to date</gloss></sense>
 </entry></JMdict>"""
 
 
@@ -29,7 +30,7 @@ class JmdictBuildTest(unittest.TestCase):
             source.write_text(XML, encoding="utf-8")
             build_jmdict.build(source, output)
             with closing(sqlite3.connect(output)) as db:
-                self.assertEqual(build_jmdict.verify(db), {"senses": 3, "forms": 3, "glosses": 3})
+                self.assertEqual(build_jmdict.verify(db), {"senses": 4, "forms": 4, "glosses": 4})
                 self.assertEqual(db.execute("""
                     SELECT s.position,s.pos,f.word,f.reading,g.text,g.folded,g.bare_verb
                     FROM senses s JOIN forms f ON f.sense=s.id JOIN glosses g ON g.sense=s.id
@@ -38,9 +39,13 @@ class JmdictBuildTest(unittest.TestCase):
                     (1, "verb", "表", "おもて", "to Run", "to run", "run"),
                     (2, "verb", "裏", "うら", "back", "back", None),
                     (3, "verb", "かな", "かな", "kana", "kana", None),
+                    (4, "adverb (fukushi)", "裏", "うら", "to date", "to date", None),
                 ])
                 self.assertEqual(db.execute("SELECT * FROM sense_examples").fetchall(),
                                  [(1, 0, "例文。", "Example.", "https://tatoeba.org/sentences/show/42")])
+                self.assertEqual(build_jmdict.bare_verb("to study", "noun or participle which takes the aux. verb suru"),
+                                 "study")
+                self.assertIsNone(build_jmdict.bare_verb("to date", "expressions (phrases, clauses, etc.)"))
                 db.execute("PRAGMA user_version=2")
                 with self.assertRaisesRegex(ValueError, "version"):
                     build_jmdict.verify(db)

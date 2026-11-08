@@ -23,6 +23,8 @@ public:
     void open(const QString &path);
     TranslationResult search(const QString &word, const QString &language) const;
     QStringList examples(qint64 senseId) const;
+    // The headword of a verb sense's gloss ("to run" -> "run"); empty otherwise ("to date").
+    static QString bareVerb(const QString &gloss, const QString &pos);
 private:
     QSqlDatabase db_;
     QString error_;

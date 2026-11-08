@@ -441,8 +441,13 @@ WordDetails DictionaryRepository::wordDetails(const QString &word, const QString
         if (query.value(1).toString() != currentSynset) {
             const auto definition = query.value(2).toString().trimmed();
             const auto id = query.value(1).toString();
-            if (result.otherMeanings.isEmpty() || result.otherMeanings.last().id != id)
-                result.otherMeanings.append({id, definition, query.value(4).toString()});
+            if (result.otherMeanings.isEmpty() || result.otherMeanings.last().id != id) {
+                result.otherMeanings.append({id, definition, query.value(4).toString(), readings});
+            } else {
+                auto &merged = result.otherMeanings.last().readings;
+                for (const auto &reading : readings)
+                    if (!merged.contains(reading)) merged.append(reading);
+            }
         } else {
             result.currentExamples = query.value(4).toString();
         }

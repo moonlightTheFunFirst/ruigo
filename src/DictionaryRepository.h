@@ -47,6 +47,7 @@ struct WordMeaning {
     QString id;
     QString definition;
     QString examples;
+    QStringList readings; // Readings of the entries that carry this meaning.
 };
 struct WordDetails {
     QStringList readings;
