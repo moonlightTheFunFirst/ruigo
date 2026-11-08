@@ -501,6 +501,44 @@ private slots:
         QTest::keyClick(input, Qt::Key_Right, Qt::AltModifier);
         QCOMPARE(input->text(), QString("beautiful"));
         QVERIFY(!mode->isChecked());
+        QApplication::clipboard()->setText("  美しい  ");
+        tree->setFocus();
+        QTest::keyClick(tree, Qt::Key_V, Qt::ControlModifier | Qt::ShiftModifier);
+        QCOMPARE(input->text(), QString("美しい"));
+        QVERIFY(tree->topLevelItemCount() > 0);
+        const auto clipboardHistory = settings.value("history/entries");
+        QApplication::clipboard()->setText("美しい\n綺麗");
+        QTest::keyClick(tree, Qt::Key_V, Qt::ControlModifier | Qt::ShiftModifier);
+        QCOMPARE(input->text(), QString("美しい"));
+        QCOMPARE(settings.value("history/entries"), clipboardHistory);
+        window.close();
+        settings.setValue("history/entries", QStringList{});
+    }
+    void historyAutoScroll() {
+        QSettings settings;
+        QStringList entries{"ja:美しい"};
+        for (int i = 0; i < 80; ++i) entries.append("ja:履歴" + QString::number(i));
+        entries[50] = "en:first Needle";
+        entries[80] = "en:second needle";
+        settings.setValue("history/entries", entries);
+        MainWindow window(fixture_);
+        window.resize(900, 400);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto *input = window.findChild<QLineEdit *>("searchInput");
+        auto *history = window.findChild<QListWidget *>("historyList");
+        auto *heading = window.findChild<QLabel *>("resultHeading");
+        history->setCurrentRow(0);
+        const auto oldHeading = heading->text();
+        auto *firstMatch = history->item(50);
+        QVERIFY(!history->viewport()->rect().intersects(history->visualItemRect(firstMatch)));
+        input->setFocus();
+        input->selectAll();
+        QTest::keyClicks(input, "needle");
+        QVERIFY(history->viewport()->rect().intersects(history->visualItemRect(firstMatch)));
+        QCOMPARE(history->currentRow(), 0);
+        QCOMPARE(heading->text(), oldHeading);
+        QCOMPARE(settings.value("history/entries").toStringList(), entries);
         window.close();
         settings.setValue("history/entries", QStringList{});
     }

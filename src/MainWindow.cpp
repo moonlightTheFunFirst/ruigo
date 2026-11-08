@@ -332,6 +332,34 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
     setCentralWidget(splitter_);
     splitter_->setSizes({300, 700});
     connect(input_, &QLineEdit::returnPressed, this, [this] { search(input_->text(), {}, true); });
+    auto *pasteSearch = new QAction(this);
+    pasteSearch->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V));
+    addAction(pasteSearch);
+    connect(pasteSearch, &QAction::triggered, this, [this] {
+        const auto word = QApplication::clipboard()->text().trimmed();
+        if (word.isEmpty()) {
+            statusBar()->showMessage(QStringLiteral("クリップボードに検索できる文字列がありません"), 2500);
+            return;
+        }
+        constexpr int maxClipboardQueryLength = 256;
+        if (word.size() > maxClipboardQueryLength || word.contains('\n') || word.contains('\r') ||
+            word.contains(QChar::LineSeparator) || word.contains(QChar::ParagraphSeparator)) {
+            statusBar()->showMessage(QStringLiteral("クリップボード検索には1行・256文字以内の語句を使ってください"), 2500);
+            return;
+        }
+        search(word, {}, true);
+    });
+    connect(input_, &QLineEdit::textEdited, this, [this](const QString &text) {
+        const auto word = text.trimmed();
+        if (word.isEmpty()) return;
+        for (int row = 0; row < historyList_->count(); ++row) {
+            const auto *item = historyList_->item(row);
+            if (item->data(Qt::UserRole + 1).toString().contains(word, Qt::CaseInsensitive)) {
+                historyList_->scrollToItem(item);
+                break;
+            }
+        }
+    });
     for (const int offset : {-1, 1}) {
         auto *action = new QAction(this);
         action->setShortcut(QKeySequence(Qt::ALT | (offset < 0 ? Qt::Key_Left : Qt::Key_Right)));
