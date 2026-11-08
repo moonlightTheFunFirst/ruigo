@@ -408,11 +408,12 @@ WordDetails DictionaryRepository::wordDetails(const QString &word, const QString
         "FROM lemmas l JOIN sources src ON src.id=l.source JOIN senses s ON s.lemma_id=l.id "
         "LEFT JOIN synset_definitions d ON d.synset_id=s.synset_id AND d.language=:language "
         "WHERE l.word=:word AND l.language=:language "
-        "AND EXISTS (SELECT 1 FROM senses current WHERE current.lemma_id=l.id "
-        "AND current.synset_id=:current) ORDER BY s.synset_id,l.id");
+        "AND (:allMeanings OR EXISTS (SELECT 1 FROM senses current WHERE current.lemma_id=l.id "
+        "AND current.synset_id=:current)) ORDER BY s.synset_id,l.id");
     query.bindValue(":word", word);
     query.bindValue(":language", language);
     query.bindValue(":current", currentSynset);
+    query.bindValue(":allMeanings", currentSynset.isEmpty());
     if (!query.exec()) {
         result.error = query.lastError().text();
         return result;

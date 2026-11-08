@@ -427,9 +427,12 @@ private slots:
         QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(history));
         QCOMPARE(history->currentRow(), 0);
         QCOMPARE(tree->currentItem(), second);
+        auto *details = window.findChild<QTextBrowser *>("wordDetails");
+        QVERIFY(details->toPlainText().startsWith("美しい"));
         QTest::keyClick(history, Qt::Key_Right);
         QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(tree));
         QCOMPARE(tree->currentItem(), second);
+        QVERIFY(details->toPlainText().startsWith("麗しい"));
         // Left on a meaning heading also goes to the history without collapsing it; Right then
         // picks the first candidate.
         tree->setCurrentItem(tree->topLevelItem(0));
@@ -954,6 +957,7 @@ private slots:
     }
     void wordDetailsPanel() {
         QSettings settings;
+        settings.setValue("history/entries", QStringList{});
         settings.setValue("display/fontFamily", QFontDatabase::systemFont(QFontDatabase::GeneralFont).family());
         settings.setValue("display/fontSize", 18);
         MainWindow window(fixture_);
@@ -988,6 +992,10 @@ private slots:
         input->setText("存在しないテスト語"); // A new search clears the old details.
         QTest::keyClick(input, Qt::Key_Return);
         QVERIFY(details->toPlainText().contains("候補を選ぶと"));
+        auto *history = window.findChild<QListWidget *>("historyList");
+        history->setCurrentRow(1);
+        QVERIFY(details->toPlainText().startsWith("美しい"));
+        QVERIFY(details->toPlainText().contains("テスト用の意味"));
         settings.remove("display");
     }
     void historySelectionFollowsSearch() {
@@ -1523,7 +1531,11 @@ private slots:
         tree->setCurrentItem(tree->topLevelItem(1));
         QVERIFY(panel->toPlainText().contains("run supplement"));
 
+        history->setCurrentRow(1); // ja:AI
         history->setCurrentRow(0); // en:run
+        const auto historyDetails = window.findChild<QTextBrowser *>("wordDetails")->toPlainText();
+        QVERIFY(historyDetails.startsWith("run"));
+        QVERIFY(historyDetails.contains("走る") && historyDetails.contains("はしる"));
         history->editItem(history->currentItem());
         auto *editor = history->findChild<QLineEdit *>("historyEditor");
         QVERIFY(editor);

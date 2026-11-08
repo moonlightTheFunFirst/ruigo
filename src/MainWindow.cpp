@@ -352,7 +352,8 @@ MainWindow::MainWindow(const QString &dictionaryPath, QWidget *parent) : QMainWi
         }
     });
     const auto searchHistoryItem = [this](QListWidgetItem *item) {
-        if (item) search(item->data(Qt::UserRole + 1).toString(), item->data(Qt::UserRole).toString());
+        if (item) search(item->data(Qt::UserRole + 1).toString(), item->data(Qt::UserRole).toString(),
+                         false, {}, {}, true);
     };
     connect(historyList_, &QListWidget::currentItemChanged, this,
         [searchHistoryItem](QListWidgetItem *current, QListWidgetItem *) { searchHistoryItem(current); });
@@ -539,7 +540,7 @@ void MainWindow::deleteHistory() {
     historyList_->setFocus();
 }
 void MainWindow::search(const QString &input, const QString &requestedLanguage, bool record,
-                        const QVector<qint64> &entries, const QString &originalInput) {
+                        const QVector<qint64> &entries, const QString &originalInput, bool fromHistory) {
     const auto word = input.trimmed();
     if (word.isEmpty()) return;
     input_->setText(word);
@@ -577,6 +578,29 @@ void MainWindow::search(const QString &input, const QString &requestedLanguage, 
         updateKaikki();
         showResult();
     }
+    if (fromHistory) showHistoryDetails(word, language_, translating ? &translations : nullptr);
+}
+
+void MainWindow::showHistoryDetails(const QString &word, const QString &language,
+                                    const TranslationResult *translations) {
+    if (translationMode_->isChecked()) {
+        const auto result = translations ? *translations : jmdict_.search(word, language);
+        QStringList sections{word};
+        for (const auto &sense : result.senses) {
+            sections.append(QStringLiteral("%1\n読み：%2\n英訳：%3").arg(
+                sense.words.join(QStringLiteral("／")), sense.readings.join(QStringLiteral("／")),
+                sense.glosses.join(QStringLiteral(" / "))));
+        }
+        if (!result.error.isEmpty()) sections.append(result.error);
+        else if (result.senses.isEmpty()) sections.append(QStringLiteral("訳が見つかりませんでした。"));
+        detailsPanel_->setPlainText(sections.join(QStringLiteral("\n\n")));
+        return;
+    }
+    const bool sameSearch = word == lastWord_ && language == language_;
+    const auto words = sameSearch && !lastResult_.matchedWords.isEmpty() ? lastResult_.matchedWords : QStringList{word};
+    QStringList sections;
+    for (const auto &headword : words) sections.append(wordDetailsHtml(headword, language));
+    detailsPanel_->setHtml(sections.join(QStringLiteral("<hr>")));
 }
 
 TranslationResult MainWindow::translate(const QString &word, QString &language, bool automatic) const {
@@ -688,35 +712,41 @@ void MainWindow::showDetailsFor(QTreeWidgetItem *item) {
             : QStringLiteral("訳を選ぶと、JMdictの見出し・読み・英訳を表示します。"));
         return;
     }
-    // The selected candidate's reading and meanings; queried for this one word only.
-    const auto escape = [](const QString &text) {
-        return text.toHtmlEscaped().replace('\n', QStringLiteral("<br>"));
-    };
     if (!item || !item->parent()) {
-        detailsPanel_->setHtml(QStringLiteral("<qt>%1</qt>").arg(escape(QStringLiteral("候補を選ぶと、読みと意味を表示します。"))));
+        detailsPanel_->setPlainText(QStringLiteral("候補を選ぶと、読みと意味を表示します。"));
         return;
     }
     const auto word = item->data(0, Qt::UserRole).toString();
-    const auto details = repository_.wordDetails(word, language_, item->data(0, Qt::UserRole + 1).toString());
+    detailsPanel_->setHtml(wordDetailsHtml(word, language_, item->data(0, Qt::UserRole + 1).toString(),
+                                          item->data(0, Qt::UserRole + 2).toString()));
+}
+QString MainWindow::wordDetailsHtml(const QString &word, const QString &language, const QString &synset,
+                                    const QString &currentDefinition) const {
+    const auto escape = [](const QString &text) {
+        return text.toHtmlEscaped().replace('\n', QStringLiteral("<br>"));
+    };
+    const auto details = repository_.wordDetails(word, language, synset);
     if (!details.error.isEmpty()) {
-        detailsPanel_->setHtml(QStringLiteral("<qt>詳細を取得できませんでした。<br>%1</qt>").arg(escape(details.error)));
-        return;
+        return QStringLiteral("詳細を取得できませんでした。<br>%1").arg(escape(details.error));
     }
     const auto definition = [&](const QString &text) {
         return escape(text.trimmed().isEmpty() ? QStringLiteral("説明なし") : text);
     };
-    QString html = QStringLiteral("<qt><b>%1</b>").arg(escape(word));
+    QString html = QStringLiteral("<b>%1</b>").arg(escape(word));
     if (details.showReadings)
         html += QStringLiteral("<br>読み：%1").arg(details.readings.isEmpty()
             ? QStringLiteral("未収録") : escape(details.readings.join(QStringLiteral("／"))));
-    html += QStringLiteral("<p><b>現在の意味</b><br>%1</p><p><b>ほかに収録されている意味</b><br>")
-        .arg(definition(item->data(0, Qt::UserRole + 2).toString()));
+    if (!synset.isEmpty()) {
+        html += QStringLiteral("<p><b>現在の意味</b><br>%1</p><p><b>ほかに収録されている意味</b><br>")
+            .arg(definition(currentDefinition));
+    } else {
+        html += QStringLiteral("<p><b>収録されている意味</b><br>");
+    }
     QStringList others;
     for (const auto &meaning : details.otherMeanings)
         others.append(QStringLiteral("%1. %2").arg(others.size() + 1).arg(definition(meaning.definition)));
     html += others.isEmpty() ? QStringLiteral("なし") : others.join(QStringLiteral("<br><br>"));
-    html += QStringLiteral("</p></qt>");
-    detailsPanel_->setHtml(html);
+    return html + QStringLiteral("</p>");
 }
 QString MainWindow::kaikkiText(const QStringList &words, const QString &language) const {
     const auto direct = kaikki_.search(words, language);
@@ -920,6 +950,7 @@ bool MainWindow::eventFilter(QObject *object, QEvent *event) {
             auto *current = results_->currentItem();
             if (current && current->parent()) {
                 results_->setFocus(Qt::TabFocusReason);
+                showDetailsFor(current);
                 return true;
             }
             for (int i = 0; i < results_->topLevelItemCount(); ++i) {
@@ -943,6 +974,8 @@ bool MainWindow::eventFilter(QObject *object, QEvent *event) {
                 QSignalBlocker blocker(historyList_);
                 if (!historyList_->currentItem()) historyList_->setCurrentRow(0);
                 historyList_->setFocus(Qt::TabFocusReason);
+                const auto *item = historyList_->currentItem();
+                showHistoryDetails(item->data(Qt::UserRole + 1).toString(), item->data(Qt::UserRole).toString());
             }
             return true;
         }

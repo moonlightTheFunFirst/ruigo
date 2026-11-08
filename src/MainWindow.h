@@ -23,13 +23,18 @@ protected:
     bool eventFilter(QObject *object, QEvent *event) override;
 private:
     void search(const QString &word, const QString &language = {}, bool record = false,
-                const QVector<qint64> &entries = {}, const QString &originalInput = {});
+                const QVector<qint64> &entries = {}, const QString &originalInput = {},
+                bool fromHistory = false);
     void updateKaikki();
     TranslationResult translate(const QString &word, QString &language, bool automatic) const;
     void showTranslation(const QString &word, const TranslationResult &result);
     void showKaikkiFor(QTreeWidgetItem *item);
     QString kaikkiText(const QStringList &words, const QString &language) const;
     void showDetailsFor(QTreeWidgetItem *item);
+    void showHistoryDetails(const QString &word, const QString &language,
+                            const TranslationResult *translations = nullptr);
+    QString wordDetailsHtml(const QString &word, const QString &language, const QString &synset = {},
+                            const QString &currentDefinition = {}) const;
     void applyBottomSizes();
     void showResult();
     void showChoices(const QStringList &headwords, const QStringList &hints,
